@@ -8,7 +8,7 @@ usage() {
     echo "  -t, --threshold THRESH    Clustering threshold for TreeCluster.py (required)"
     echo "  -c, --completeness CMP    Minimum completeness percentage (default: 95)"
     echo "  -C, --contamination CNT   Maximum contamination percentage (default: 5)"
-    echo "  -m, --method METHOD       Clustering method [avg_clade|max_clade|...] (default: avg_clade)"
+    echo "  -m, --method METHOD       Clustering method [avg_clade|max_clade|root_dist|...] (default: avg_clade), more info at https://github.com/niemasd/TreeCluster"
     echo "  -o, --output FILE         Output file name for selected accessions (default: DIR/selected_ncbi_accessions.txt)"
     echo "  -h, --help                Show this help message"
     exit 1
