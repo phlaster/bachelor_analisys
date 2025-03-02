@@ -14,6 +14,28 @@ usage() {
     exit 1
 }
 
+
+# Проверка зависимостей
+check_dependencies() {
+    local deps=("awk" "wget" "gunzip" "sort" "join" "TreeCluster.py")
+    for cmd in "${deps[@]}"; do
+        if ! command -v "$cmd" &> /dev/null; then
+            echo "Error: Required command '$cmd' not found"
+            exit 1
+        fi
+    done
+}
+
+# Скачивание файлов при необходимости
+download_file() {
+    local url=$1
+    local dest=$2
+    if [ ! -f "$dest" ]; then
+        echo "Downloading ${url}..."
+        wget -q -O - "$url" | gunzip > "$dest.tmp" && mv "$dest.tmp" "$dest"
+    fi
+}
+
 # Инициализация переменных
 DIR=""
 COMPLETENESS=95
@@ -65,13 +87,7 @@ if [ -z "$DIR" ] || [ -z "$THRESHOLD" ]; then
     usage
 fi
 
-# Проверка доступности утилит
-for cmd in awk wget gunzip sort join TreeCluster.py; do
-    if ! command -v $cmd &> /dev/null; then
-        echo "Error: $cmd not found. Please install it and try again."
-        exit 1
-    fi
-done
+check_dependencies
 
 # Создание временных файлов
 TMP_HQ=$(mktemp)
@@ -91,15 +107,6 @@ trap cleanup EXIT
 # Создание основной директории
 mkdir -p "$DIR"
 
-# Скачивание файлов при необходимости
-download_file() {
-    local url=$1
-    local dest=$2
-    if [ ! -f "$dest" ]; then
-        echo "Downloading ${url}..."
-        wget -q -O - "$url" | gunzip > "$dest.tmp" && mv "$dest.tmp" "$dest"
-    fi
-}
 
 METADATA_URL="https://data.ace.uq.edu.au/public/gtdb/data/releases/release220/220.0/bac120_metadata_r220.tsv.gz"
 TREE_URL="https://data.ace.uq.edu.au/public/gtdb/data/releases/release220/220.0/bac120_r220.tree.gz"
