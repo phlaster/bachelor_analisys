@@ -1,6 +1,6 @@
 #!/usr/bin/env julia
-PROJECT_DIR = dirname(@__DIR__)
-SRC_FILE = joinpath(PROJECT_DIR, "src", "utils.jl")
+const PROJECT_DIR = dirname(@__DIR__)
+const SRC_FILE = joinpath(PROJECT_DIR, "src", "utils.jl")
 
 using Pkg
 Pkg.activate(PROJECT_DIR, io=devnull)
