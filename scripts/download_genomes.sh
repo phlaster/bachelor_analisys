@@ -44,7 +44,7 @@ process_chunk() {
         if datasets download genome accession \
             --inputfile "$chunk_path" \
             --include genome,gff3 \
-            --filename "$archive_path" 2>/dev/null; then
+            --filename "$archive_path"; then
             
             local end=$(date +%s)
             duration=$((end - start))
