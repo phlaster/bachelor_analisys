@@ -10,6 +10,7 @@ include(UTILS_FILE)
 using ArgParse
 using Dates
 using Logging
+using ProgressMeter
 
 # Parse command-line arguments
 function parse_commandline()
@@ -152,7 +153,7 @@ function main()
     active_tasks = Task[]
     failed_accessions = String[]
 
-    for accession in accessions_to_download
+    @showprogress for accession in accessions_to_download
         while length(active_tasks) >= parallel
             finished_task = wait_any(active_tasks)
             filter!(t -> t !== finished_task, active_tasks)
