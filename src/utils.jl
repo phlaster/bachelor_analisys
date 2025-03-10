@@ -14,7 +14,7 @@ end
 function check_dependencies(execs)
     for cmd in execs
         try
-            run(pipeline(`which $cmd`, "/dev/null"))
+            run(pipeline(`which $cmd`, devnull))
         catch
             @error "Required command '$cmd' not found in PATH"
             exit(1)

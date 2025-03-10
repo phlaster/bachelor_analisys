@@ -55,7 +55,7 @@ function download_accession(accession::AbstractString, output_dir::AbstractStrin
         @info "Attempt $attempts of $max_retries for accession $accession"
         start_time = now()
         try
-            cmd = pipeline(`datasets download genome accession $accession --include genome,gff3 --filename $archive_part`, "/dev/null")
+            cmd = pipeline(`datasets download genome accession $accession --include genome,gff3 --filename $archive_part`, devnull)
             run(cmd)
             duration = (now() - start_time).value / 1000
 
@@ -96,7 +96,7 @@ function extract_archives(output_dir::String)
         
         @info "Extracting $zip to $extraction_dir (Thread $(Threads.threadid()))"
         try
-            run(pipeline(`unzip -o $zip -d $extraction_dir`, "/dev/null"))
+            run(pipeline(`unzip -o $zip -d $extraction_dir`, devnull))
         catch e
             @error "Failed to extract $zip to $extraction_dir: $e (Thread $(Threads.threadid()))"
         end
