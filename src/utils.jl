@@ -130,9 +130,7 @@ function create_sankey(steps::Vector{Pair{Int64, String}}; savefile=nothong)
 		Layout(title_text = "Applied filters", font_size = 15, margin = attr(b = 100, r=100, l=100, t=100))
 	)
     if !isnothing(savefile)
-        open(savefile, "w") do io
-            PlotlyBase.to_html(io, create_sankey(filter_steps).plot)
-        end
+        PlotlyJS.savefig(plt, savefile)
     end
     return plt
 end
