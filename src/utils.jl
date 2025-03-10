@@ -11,6 +11,19 @@ function clear_last_lines(n::Int)
     flush(stdout)
 end
 
+function check_dependencies(execs)
+    for cmd in execs
+        try
+            run(pipeline(`which $cmd`, "/dev/null"))
+        catch
+            @error "Required command '$cmd' not found in PATH"
+            exit(1)
+        end
+    end
+    @info "All dependencies found"
+end
+
+
 
 """
     ConfusionMTR

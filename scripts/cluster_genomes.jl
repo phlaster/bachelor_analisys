@@ -80,20 +80,6 @@ function parse_commandline()
     return parse_args(s)
 end
 
-function check_dependencies()
-    try
-        run(pipeline(`TreeCluster.py --help`, stdout=devnull, stderr=devnull))
-    catch e
-        @error "treecluster is not installed or not in PATH"
-        exit()
-    end
-    try
-        run(pipeline(`nw_prune -h`, stdout=devnull, stderr=devnull))
-    catch e
-        @error "newick_utils is not installed or not in PATH"
-        exit()
-    end
-end
 
 function download_file(url, dest)
     if !isfile(dest)
@@ -226,7 +212,7 @@ end
 
 
 function main()
-    check_dependencies()
+    check_dependencies(["TreeCluster.py", "nw_prune"])
     args = parse_commandline()
 
     dir_in = abspath(args["InputDirectory"])

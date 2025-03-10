@@ -1,11 +1,11 @@
 #!/usr/bin/env julia
 
 const PROJECT_DIR = dirname(@__DIR__)
-# const UTILS_FILE = joinpath(PROJECT_DIR, "src", "utils.jl")
+const UTILS_FILE = joinpath(PROJECT_DIR, "src", "utils.jl")
 
 using Pkg
 Pkg.activate(PROJECT_DIR, io=devnull)
-# include(UTILS_FILE)
+include(UTILS_FILE)
 
 using ArgParse
 using Dates
@@ -35,19 +35,6 @@ function parse_commandline()
             default = 1
     end
     return parse_args(s)
-end
-
-# Check external dependencies
-function check_dependencies()
-    for cmd in ["datasets", "unzip"]
-        try
-            run(pipeline(`which $cmd`, "/dev/null"))
-        catch
-            @error "Required command '$cmd' not found in PATH"
-            exit(1)
-        end
-    end
-    @info "All dependencies found"
 end
 
 # Download a single accession
@@ -133,7 +120,7 @@ end
 function main()
     global_logger(ConsoleLogger(stdout, Logging.Info))
     args = parse_commandline()
-    check_dependencies()
+    check_dependencies(["datasets", "unzip"])
 
     input_file = abspath(args["input-file"])
     output_dir = abspath(args["output-dir"])
