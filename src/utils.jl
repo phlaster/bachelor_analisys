@@ -23,6 +23,16 @@ function check_dependencies(execs)
     @info "All dependencies found"
 end
 
+function wait_tasks(tasks::Vector{Task})
+    while true
+        for t in tasks
+            if istaskdone(t)
+                return t
+            end
+        end
+        sleep(0.5)
+    end
+end
 
 function create_sankey(steps::Vector{Pair{Int64, String}}; savefile=nothong)
     # Number of steps in the data pipeline.

@@ -10,18 +10,19 @@ include(UTILS_FILE)
 using ArgParse
 using Dates
 using Logging
+using DelimitedFiles
 using ProgressMeter
+using .Threads: nthreads, @threads, threadid
 
-# Parse command-line arguments
 function parse_commandline()
-    s = ArgParseSettings(prog="Genome Downloader",
-        description="Download genomic data for each accession separately.")
+    s = ArgParseSettings(prog="download_genomes.jl",
+        description="""Download genomes for all accessions in the chosen file as separate zip archives""")
     @add_arg_table! s begin
         "--input-file", "-i"
-            help = "Path to accessions file"
+            help = "Path to accessions .tsv file"
             required = true
         "--output-dir", "-o"
-            help = "Output directory"
+            help = "Output directory (will be created if absent)"
             required = true
         "--max-retries", "-r"
             help = "Maximum download attempts per accession"
@@ -30,8 +31,12 @@ function parse_commandline()
         "--extract", "-e"
             help = "Extract downloaded archives"
             action = :store_true
+        "--force", "-f"
+            help = "Force archives extraction"
+            action = :store_true
         "--parallel", "-p"
-            help = "Number of simultaneous downloads"
+            help = "Number of simultaneous downloads \
+            !!! to run unzip step with N parallel threads run the whole script as `julia --threads N script.jl [args]`"
             arg_type = Int
             default = 1
     end
@@ -83,38 +88,71 @@ function download_accession(accession::AbstractString, output_dir::AbstractStrin
     return success
 end
 
-function extract_archives(output_dir::String)
+function extract_archives(output_dir::String; force=false)
     archive_dir = joinpath(output_dir, "archives")
     genome_dir = joinpath(output_dir, "genomes")
     mkpath(genome_dir)
     
     zips = filter(f -> endswith(f, ".zip"), readdir(archive_dir, join=true))
-    
-    Threads.@threads for zip in zips
+    prog = Progress(length(zips))
+    @threads for zip in zips
         accession = splitext(basename(zip))[1]
         extraction_dir = joinpath(genome_dir, accession)
         mkpath(extraction_dir)
-        
-        @info "Extracting $zip to $extraction_dir (Thread $(Threads.threadid()))"
-        try
-            run(pipeline(`unzip -o $zip -d $extraction_dir`, devnull))
-        catch e
-            @error "Failed to extract $zip to $extraction_dir: $e (Thread $(Threads.threadid()))"
-        end
-    end
-    @info "Extraction completed"
-end
+        target_fna = joinpath(extraction_dir, "$accession.fna")
+        target_gff = joinpath(extraction_dir, "$accession.gff")
+        target_json = joinpath(extraction_dir, "$accession.json")
 
-# Wait for any task to finish
-function wait_any(tasks::Vector{Task})
-    while true
-        for t in tasks
-            if istaskdone(t)
-                return t
-            end
+        if any(isfile, [target_fna, target_gff, target_json]) && !force
+            error("$extraction_dir has name collisions")
+            exit()
         end
-        sleep(0.1)  # Avoid busy-waiting
+        
+        # Step 1: Extract the archive into a temporary directory
+        temp_dir = mktempdir()
+        try
+            run(pipeline(`unzip -o $zip -d $temp_dir`, devnull))
+            
+            # Step 2: Locate and move the required files
+            data_dir = joinpath(temp_dir, "ncbi_dataset", "data", accession)
+            if isdir(data_dir)
+                # Find and move the FASTA file
+                fna_files = filter(f -> endswith(f, "_genomic.fna"), readdir(data_dir))
+                if length(fna_files) == 1
+                    original_fna = joinpath(data_dir, fna_files[1])
+                    mv(original_fna, target_fna, force=true)
+                else
+                    @warn "Expected one _genomic.fna file in $data_dir, found $(length(fna_files))"
+                end
+                
+                # Move and rename the GFF file
+                original_gff = joinpath(data_dir, "genomic.gff")
+                if isfile(original_gff)
+                    mv(original_gff, target_gff, force=true)
+                else
+                    @warn "GFF file missing in $data_dir"
+                end
+            else
+                @warn "Data directory not found for $accession"
+            end
+            
+            # Move and rename the JSON assembly report
+            json_file = joinpath(temp_dir, "ncbi_dataset", "data", "assembly_data_report.jsonl")
+            if isfile(json_file)
+                mv(json_file, target_json, force=true)
+            else
+                @warn "Assembly report JSON missing for $accession"
+            end
+            
+            # Step 3: Clean up temporary directory
+            rm(temp_dir, recursive=true)
+        catch e
+            @error "Failed to process $zip for $accession: $e (Thread $(threadid()))"
+            rm(temp_dir, recursive=true, force=true)
+        end
+        next!(prog)
     end
+    @info "Extraction and reorganization completed"
 end
 
 # Main function
@@ -124,16 +162,17 @@ function main()
     check_dependencies(["datasets", "unzip"])
 
     input_file = abspath(args["input-file"])
-    output_dir = abspath(args["output-dir"])
+    output_dir = abspath(mkpath(args["output-dir"]))
     max_retries = max(1, args["max-retries"])
     extract = args["extract"]
     parallel = max(1, args["parallel"])
+    force = args["force"]
 
     if !isfile(input_file)
         @error "Input file '$input_file' does not exist"
         exit(1)
     end
-    accessions = unique!(filter(!isempty, strip.(readlines(input_file))))
+    accessions = unique(readdlm(input_file, '\t'; skipstart=1)[:, 1])
     if isempty(accessions)
         @error "Input file '$input_file' is empty"
         exit(1)
@@ -155,7 +194,7 @@ function main()
 
     @showprogress for accession in accessions_to_download
         while length(active_tasks) >= parallel
-            finished_task = wait_any(active_tasks)
+            finished_task = wait_tasks(active_tasks)
             filter!(t -> t !== finished_task, active_tasks)
         end
 
@@ -179,7 +218,7 @@ function main()
     end
 
     if extract
-        extract_archives(output_dir)
+        extract_archives(output_dir; force=force)
     end
 
     @info "Download process completed"
