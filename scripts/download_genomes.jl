@@ -13,8 +13,8 @@ using Logging
 
 # Parse command-line arguments
 function parse_commandline()
-    s = ArgParseSettings(prog="Genome Downloader", 
-                         description="Download genomic data for each accession separately.")
+    s = ArgParseSettings(prog="Genome Downloader",
+        description="Download genomic data for each accession separately.")
     @add_arg_table! s begin
         "--input-file", "-i"
             help = "Path to accessions file"
@@ -56,37 +56,31 @@ function download_accession(accession::AbstractString, output_dir::AbstractStrin
     mkpath(archive_dir)
     archive_path = joinpath(archive_dir, "$accession.zip")
     archive_part = "$archive_path.part"
-    
-    # Check if the archive already exists
-    if isfile(archive_path)
-        @info "Accession $accession: Archive already exists, skipping download"
-        return true
-    end
-    
+
     attempts = 0
     success = false
     duration = 0.0
-    
+
     while attempts < max_retries && !success
         attempts += 1
         rm(archive_part, force=true)
-        
+
         @info "Attempt $attempts of $max_retries for accession $accession"
         start_time = now()
         try
             cmd = pipeline(`datasets download genome accession $accession --include genome,gff3 --filename $archive_part`, "/dev/null")
             run(cmd)
             duration = (now() - start_time).value / 1000
-            
+
             if min_duration[] != -1 && duration > 3 * min_duration[]
                 @warn "Accession $accession: Download took $(duration)s (> $(3 * min_duration[])s), retrying..."
                 continue
             end
-            
+
             if min_duration[] == -1 || duration < min_duration[]
                 min_duration[] = duration
             end
-            
+
             mv(archive_part, archive_path, force=true)
             success = true
             @info "Accession $accession: Downloaded successfully in $(duration)s"
@@ -97,7 +91,7 @@ function download_accession(accession::AbstractString, output_dir::AbstractStrin
             end
         end
     end
-    
+
     return success
 end
 
@@ -109,11 +103,15 @@ function extract_archives(output_dir::String)
     zips = filter(f -> endswith(f, ".zip"), readdir(archive_dir, join=true))
     
     Threads.@threads for zip in zips
-        @info "Extracting $zip (Thread $(Threads.threadid()))"
+        accession = splitext(basename(zip))[1]
+        extraction_dir = joinpath(genome_dir, accession)
+        mkpath(extraction_dir)
+        
+        @info "Extracting $zip to $extraction_dir (Thread $(Threads.threadid()))"
         try
-            run(pipeline(`unzip -o $zip -d $genome_dir`, "/dev/null"))
+            run(pipeline(`unzip -o $zip -d $extraction_dir`, "/dev/null"))
         catch e
-            @error "Failed to extract $zip: $e (Thread $(Threads.threadid()))"
+            @error "Failed to extract $zip to $extraction_dir: $e (Thread $(Threads.threadid()))"
         end
     end
     @info "Extraction completed"
@@ -136,13 +134,13 @@ function main()
     global_logger(ConsoleLogger(stdout, Logging.Info))
     args = parse_commandline()
     check_dependencies()
-    
+
     input_file = abspath(args["input-file"])
     output_dir = abspath(args["output-dir"])
     max_retries = max(1, args["max-retries"])
     extract = args["extract"]
     parallel = max(1, args["parallel"])
-    
+
     if !isfile(input_file)
         @error "Input file '$input_file' does not exist"
         exit(1)
@@ -152,19 +150,27 @@ function main()
         @error "Input file '$input_file' is empty"
         exit(1)
     end
-    
-    @info "Processing $(length(accessions)) accessions with $parallel parallel downloads"
-    min_duration = Ref{Float64}(-1)  # Tracks fastest download time
-    
+
+    # Filter accessions to download only those that are missing
+    archive_dir = joinpath(output_dir, "archives")
+    accessions_to_download = [acc for acc in accessions if !isfile(joinpath(archive_dir, "$acc.zip"))]
+    skipped = length(accessions) - length(accessions_to_download)
+    if skipped > 0
+        @info "Skipping $skipped accessions that are already downloaded"
+    end
+    @info "Processing $(length(accessions_to_download)) accessions with $parallel parallel downloads"
+
+    min_duration = Ref{Float64}(-1) # Tracks fastest download time
+
     active_tasks = Task[]
     failed_accessions = String[]
-    
-    for accession in accessions
+
+    for accession in accessions_to_download
         while length(active_tasks) >= parallel
             finished_task = wait_any(active_tasks)
             filter!(t -> t !== finished_task, active_tasks)
         end
-        
+
         task = @async begin
             success = download_accession(accession, output_dir, max_retries, min_duration)
             if !success
@@ -173,21 +179,21 @@ function main()
         end
         push!(active_tasks, task)
     end
-    
+
     for task in active_tasks
         wait(task)
     end
-    
+
     if !isempty(failed_accessions)
         @error "Failed to download $(length(failed_accessions)) accessions: $(join(failed_accessions, ", "))"
     else
         @info "All accessions downloaded successfully"
     end
-    
+
     if extract
         extract_archives(output_dir)
     end
-    
+
     @info "Download process completed"
 end
 
