@@ -23,24 +23,38 @@ extract_accession(acc) = match(GENBANK_PATTERN, acc).match
 
 
 function parse_commandline()
-    s = ArgParseSettings()
+    s = ArgParseSettings(
+        prog="cluster_genomes.jl",
+        description = "Script for preparing dataset accessions through filtering and tree clustering",
+        usage="""
+        cluster_genomes.jl -i INPUT-DIR [-o OUTPUT-DIR] [-t TRESHOLD] [-m CLUSTER-METHOD] [-p COMPLETENESS-from [- CONTAMINATION-MAX] [-g CONTIGS-MAX] [-r TRNA-MIN] [-n N50-MIN] [-h]
+
+        1. Fetch GTDB metadata+tree via hardcoded links (skip if both files are present)
+        2. Cluster the tree using TreeCluster.py with chosen algorithm and threshold
+        3. Leave accessions, present in tree file
+        4. Apply: chosen filters ∪ ncbi_rrna_count≠"none" ∪ ncbi_assembly_level∈{"Complete Genome", "Chromosome"}
+        5. Rename accessions to match GenBank naming (eg.: RS_GCF_000657795.2 -> GCF_000657795.2)
+        6. Resulting files in `--output-dir`:
+            - `sankey_filter.html`: PlotlyJS page visualising filtering steps as https://en.wikipedia.org/wiki/Sankey_diagram
+            - `filtering_report.json`: report with used parameters, intermediate sample sizes and final stats
+            - `filtered_accessions.tsv`: table with all filtered accessions and their relevant fields
+            - `train.tsv`: subset of filtered data, where from each cluster a single accession is taken
+            - `validation.tsv`: subset of filtered {data\\train}, where from each cluster a single accession is taken
+        """)
 
     @add_arg_table! s begin
-        "--InputDirectory", "-I"
-            help = "Output directory for tree and metadata files (required)"
+        "--input-dir", "-i"
+            help = "Output directory for tree and metadata files (required), if no files there, download them using hardcoded links"
             required = true
-        "--OutputDirectory", "-O"
-            help = "Output file name for selected accessions"
-        "--Accessions", "-A"
-            help = "Flag to include accessions into resulting JSON"
-            action = :store_true
+        "--output-dir", "-o"
+            help = "Output file name for script output. --input-dir if not provided"
 
-        "--TreeClusterTreshold", "-T"
-            help = "Clustering threshold for TreeCluster.py (required)"
+        "--treshold", "-t"
+            help = "Clustering threshold for TreeCluster.py"
             default = 0.2463
             arg_type = Float64
-        "--TreeClusterMethod", "-m"
-            help = "Clustering method"
+        "--cluster-method", "-m"
+            help = "Clustering method (see: https://github.com/niemasd/TreeCluster)"
             default = "avg_clade"
             range_tester = x->in(x, [
                 "avg_clade", "leaf_dist_avg", "leaf_dist_max",
@@ -49,28 +63,28 @@ function parse_commandline()
                 "single_linkage", "single_linkage_cut",
                 "single_linkage_union", "sum_branch", "sum_branch_clade"])
 
-        "--CompletenessMin", "-C"
-            help = "Minimum completeness percentage"
+        "--completeness-min", "-p"
+            help = "Minimum completeness percentage (from metadata)"
             default = 98.0
             arg_type = Float64
             range_tester = x->0.0≤x≤100.0
-        "--ContaminationMax", "-c"
-            help = "Maximum contamination"
+        "--contamination-max", "-c"
+            help = "Maximum contamination (from metadata)"
             default = 5.0
             arg_type = Float64
             range_tester = x->0.0≤x≤100.0
-        "--ContigCountMax", "-g"
-            help = "Maximum contig count for a genome"
+        "--contigs-max", "-g"
+            help = "Maximum contig count for a genome (from metadata)"
             default = 200
             arg_type = Int64
             range_tester = x->x≥1
-        "--tRNACountMin", "-R"
-            help = "Minimum tRNA count for a genome"
+        "--trna-min", "-r"
+            help = "Minimum tRNA count for a genome (from metadata)"
             default = 40
             arg_type = Int64
             range_tester = x->x≥0
-        "--N50Min", "-N"
-            help = "N50 score for a genome"
+        "--n50-min", "-n"
+            help = "N50 score for a genome (from metadata)"
             default = 50_000
             arg_type = Int64
             range_tester = x->x≥1
@@ -103,24 +117,30 @@ end
 
 
 function main()
-    check_dependencies(["TreeCluster.py", "nw_prune"])
     args = parse_commandline()
+    check_dependencies(["TreeCluster.py", "nw_prune"])
 
-    dir_in = abspath(args["InputDirectory"])
-    dir_out = isnothing(args["OutputDirectory"]) ? dir_in : args["OutputDirectory"]
-    include_accessions = args["Accessions"]
+    dir_in = abspath(args["input-dir"])
+    dir_out = isnothing(args["output-dir"]) ? dir_in : args["output-dir"]
 
-    threshold = args["TreeClusterTreshold"]
-    method = args["TreeClusterMethod"]
+    threshold = args["treshold"]
+    method = args["cluster-method"]
 
-    completeness_min = args["CompletenessMin"]
-    contamination_max = args["ContaminationMax"]
-    contig_count_max = args["ContigCountMax"]
-    trna_count_min = args["tRNACountMin"]
-    n50_min = args["N50Min"]
+    completeness_min = args["completeness-min"]
+    contamination_max = args["contamination-max"]
+    contig_count_max = args["contigs-max"]
+    trna_count_min = args["trna-min"]
+    n50_min = args["n50-min"]
     
     mkpath(dir_in)
     mkpath(dir_out)
+
+    # all output filenames
+    output_sankey_filter = joinpath(dir_out, "sankey_filter.html")
+    output_json = joinpath(dir_out, "filtering_report.json")
+    output_all_accessions = joinpath(dir_out, "filtered_accessions.tsv")
+    train_filename = joinpath(dir_out, "train.tsv")
+    validation_filename = joinpath(dir_out, "validation.tsv")
     
     metadata_file = joinpath(dir_in, "bac120_metadata_r220.tsv")
     tree_file = joinpath(dir_in, "bac120_r220.tree")
@@ -182,8 +202,8 @@ function main()
         filter(r->r.n50_contigs ≥ n50_min, _)
         @aside push!(filter_steps, nrow(_)=>"n50≥$n50_min")
     end
-    output_sankey_filter = joinpath(dir_out, "sankey_filter.html")
     create_sankey(filter_steps; savefile=output_sankey_filter)
+    
     hq_count = nrow(joined_df)
     @info "Genome count after all filters: $hq_count"
 
@@ -197,7 +217,7 @@ function main()
     @info "Chao1 = $chao1"
     
     filtered_hq_accessions = Dict(
-        "parameters" => Dict(
+        "filter_parameters" => Dict(
             "completeness_min" => completeness_min,
             "contamination_max" => contamination_max,
             "contig_count_max" => contig_count_max,
@@ -215,39 +235,42 @@ function main()
             "doubletons" => doubletons,
             "chao1" => chao1,            
         ),
-        "accessions" => include_accessions ? collect(zip(joined_df.accession, joined_df.cluster)) : []
+        "sankey_stages" => collect(enumerate(filter_steps))
     )
 
-    output_json = joinpath(dir_out, "filtering_report.json")
     open(output_json, "w") do io
-        JSON3.pretty(io, filtered_hq_accessions, JSON3.AlignmentContext(alignment=:Left, indent=2, level=0, offset=0))
+        JSON3.pretty(io, filtered_hq_accessions, JSON3.AlignmentContext(alignment=:Left, indent=2))
     end
-    @info "Report saved to: $output_json"
+    @info "Filtering report saved to: $output_json"
 
-    output_all_accessions = joinpath(dir_out, "filtered_accessions.txt")
-    open(output_all_accessions, "w") do io
-        for acc in joined_df.accession
-            println(io, acc)
-        end
-    end
-    @info "All filtered accession saved to $output_all_accessions"
+    selected_cols = [
+        :accession,
+        :genome_size,
+        :trna_count,
+        :contig_count,
+        :n50_contigs,
+        :ncbi_rrna_count,
+        :gc_percentage,
+        :cluster,
+        :gtdb_taxonomy,
+        :ncbi_assembly_level,
+    ]
 
     
     train_accs = pick_one_per_cluster(joined_df)
     validation_accs = pick_one_per_cluster(joined_df; skip=train_accs)
-
-    train_filename = joinpath(dir_out, "train.txt")
-    validation_filename = joinpath(dir_out, "validation.txt")
-
-    open(train_filename, "w") do io
-        foreach(acc -> println(io, acc), train_accs)
-    end
-    @info "Train accessions written to $train_filename"
-
-    open(validation_filename, "w") do io
-        foreach(acc -> println(io, acc), validation_accs)
-    end
-    @info "Validation accessions written to $validation_filename"
+    
+    train_df = filter(row -> row.accession in train_accs, joined_df)
+    validation_df = filter(row -> row.accession in validation_accs, joined_df)
+    
+    CSV.write(output_all_accessions, joined_df[!, selected_cols]; delim='\t')
+    @info "Training acccessions saved to $train_filename"
+    CSV.write(train_filename, train_df[!, selected_cols]; delim='\t')
+    @info "Validation acccessions saved to $validation_filename"
+    CSV.write(validation_filename, validation_df[!, selected_cols]; delim='\t')
+    @info "All filtered accession saved to $output_all_accessions"
 end
 
-main()
+if abspath(PROGRAM_FILE) == @__FILE__
+    main()
+end
