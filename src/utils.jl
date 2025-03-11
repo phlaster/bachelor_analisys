@@ -183,27 +183,30 @@ function Base.show(io::IO, cm::ConfusionMTR)
 end
 
 """
-    precision(CM::ConfusionMTR)::Float
+    precision(CM::ConfusionMTR)
 
-Возвращает precision (точность) из ConfusionMTR.
+Calculate precision (positive predictive value) from a confusion matrix. Precision represents 
+the proportion of true positive predictions among all positive predictions made by the model.
 """
 function precision(CM::ConfusionMTR)
     return CM.TP / (CM.TP + CM.FP)
 end
 
 """
-    recall(CM::ConfusionMTR)::Float64
+    recall(CM::ConfusionMTR)
 
-Возвращает recall (полноту) из ConfusionMTR.
+Calculate recall (sensitivity) from a confusion matrix. Recall measures the proportion of 
+actual positives correctly identified by the model from all positive instances in the data.
 """
 function recall(CM::ConfusionMTR)
     return CM.TP / (CM.TP + CM.FN)
 end
 
 """
-    f1_score(CM::ConfusionMTR)::Float64
+    f1_score(CM::ConfusionMTR)
 
-Вычисляет F1-score на основе precision и recall.
+Compute the F1-score, the harmonic mean of precision and recall. Provides a balanced 
+measure of model performance that accounts for both false positives and false negatives.
 """
 function f1_score(CM::ConfusionMTR)
     prec = precision(CM)
@@ -212,61 +215,57 @@ function f1_score(CM::ConfusionMTR)
 end
 
 """
-    false_dr(CM::ConfusionMTR)::Float64
+    false_dr(CM::ConfusionMTR)
 
-Возвращает False Discovery Rate (FDR) из ConfusionMTR.
+Calculate the False Discovery Rate (FDR), representing the proportion of false positives 
+among all positive predictions. Complementary to precision (FDR = 1 - precision).
 """
 function false_dr(CM::ConfusionMTR)
     return CM.FP / (CM.TP + CM.FP)
 end
 
-
-
 """
-    open_gff(name::String)::Vector{GFF3.Record}
+    open_gff(name)
 
-Читает GFF-файл и возвращает список записей.
-Аргументы:
-- `name`: Имя файла.
+Read and parse a GFF3 file, returning all records as a vector.
 """
 open_gff(name::String) = open(GFF3.Reader, name) do gff collect(gff) end
 
 """
-    locus(record::GFF3.Record)::String
+    locus(record)
 
-Формирует строку локуса для GFF3 записи.
-Пример: "chr1:100..200".
+Create a standardized locus string from a GFF3 record in "seqid:start..end" format. 
+Example: "chrX:5000..7500" represents a feature spanning positions 5000 to 7500 on chromosome X.
 """
 locus(record::GFF3.Record) = "$(GFF3.seqid(record)):$(GFF3.seqstart(record))..$(GFF3.seqend(record))"
 
 """
-    locus(seqid::String)::Function
+    locus(seqid)
 
-Создает функцию для формирования локуса с заданным seqid.
-Пример: `locus("chr1")(1:100)` → "chr1:1..100".
+Create a locus string generator for a specific chromosome/sequence identifier. The returned 
+function accepts a UnitRange{Int} to produce locus strings (e.g., locus("chr2")(1000:2000) → "chr2:1000..2000").
 """
 locus(seqid::String) = interval::UnitRange{Int64} -> "$seqid:$(interval.start)..$(interval.stop)"
 
 """
-    ranges_from_GFF_records(list::Vector{GFF3.Record})::Vector{UnitRange{Int}}
+    ranges_from_GFF_records(list)
 
-Извлекает диапазоны из списка GFF3 записей.
+Extract genomic position ranges from GFF3 records. Returns a vector of UnitRanges representing 
+the start and end positions of each feature in the input records.
 """
 ranges_from_GFF_records(list::Vector{GFF3.Record}) = [
     GFF3.seqstart(x):GFF3.seqend(x) for x in list
 ]
 
 """
-    filter_gff_region(sequence_header::String; regiontype::String, strand::String="+", phase::Int=-1)::Function
+    filter_gff_region(sequence_header; regiontype, strand, phase)
 
-Создает фильтр для GFF3 записей по параметрам.
-Аргументы:
-- `sequence_header`: Имя хромосомы.
-- `regiontype`: Тип области (например, "gene").
-- `strand`: Направление ("+", "-", или не задано).
-- `phase`: Фаза (или -1 для игнорирования).
-Возвращает:
-- Функцию фильтрации.
+Create a filter function for GFF3 records based on multiple criteria:
+- `sequence_header`: Chromosome/contig name to match
+- `regiontype`: Required feature type (e.g., "gene", "exon")
+- `strand`: Strand direction ("+" or "-"), optional filter
+- `phase`: Translation phase (0-2), use -1 to disable phase filtering
+The returned function filters vectors of GFF3.Record objects.
 """
 filter_gff_region(sequence_header::String; regiontype::String, strand::String="+", phase::Int=-1) = list::Vector{GFF3.Record} -> filter(
     x -> all([
@@ -279,13 +278,11 @@ filter_gff_region(sequence_header::String; regiontype::String, strand::String="+
 
 
 """
-    feature_strand_table(gff_entries::Vector{GFF3.Record}, chrom::String)::DataFrame
+    feature_strand_table(gff_entries, chrom)
 
-Создает таблицу распределения фичей по направлениям на хромосоме.
-Столбцы:
-- `Feature`: Тип фичи.
-- `Positive_Strand`: Количество на позитивной цепи.
-- `Negative_Strand`: Количество на негативной цепи.
+Generate a summary table showing strand distribution of genomic features. Returns a DataFrame 
+with columns: Feature type, Positive Strand count, and Negative Strand count for features 
+on the specified chromosome.
 """
 function feature_strand_table(gff_entries::Vector{GFF3.Record}, chrom::String)::DataFrame
     features = gff_entries .|> GFF3.featuretype |> Set
@@ -306,16 +303,10 @@ function feature_strand_table(gff_entries::Vector{GFF3.Record}, chrom::String)::
 end
 
 """
-    rand_locus(gff_entries::Vector{GFF3.Record}, chrom::String, feature::String; strand::String="+")::String
+    rand_locus(gff_entries, chrom, feature; strand)
 
-Выбирает случайный локус для заданной фичи и хромосомы.
-Аргументы:
-- `gff_entries`: Список записей GFF.
-- `chrom`: Имя хромосомы.
-- `feature`: Тип фичи.
-- `strand`: Направление (по умолчанию "+").
-Возвращает:
-- Случайный локус в формате строки.
+Randomly select a genomic locus from features of specified type and strand. Useful for 
+sampling representative regions from annotation data.
 """
 function rand_locus(gff_entries::Vector{GFF3.Record}, chrom::String, feature::String; strand::String="+")::String
     region = gff_entries |> filter_gff_region(chrom; strand=strand, regiontype=feature) |> x->rand(x)
@@ -323,15 +314,11 @@ function rand_locus(gff_entries::Vector{GFF3.Record}, chrom::String, feature::St
 end
 
 """
-    extract_regions(gff_entries::Vector{GFF3.Record}, chrom::String, regtype="gene")::Tuple{Vector{UnitRange{Int}}, Vector{UnitRange{Int}}}
+    extract_regions(gff_entries, chrom, regtype)
 
-Извлекает диапазоны для позитивной и негативной цепей заданного типа.
-Аргументы:
-- `gff_entries`: Список записей GFF.
-- `chrom`: Имя хромосомы.
-- `regtype`: Тип области (по умолчанию "gene").
-Возвращает:
-- Кортеж с диапазонами для позитивной и негативной цепей.
+Separate genomic features into positive and negative strand ranges. Returns a tuple 
+containing two vectors of UnitRanges: (positive_strand_ranges, negative_strand_ranges) 
+for the specified feature type on the given chromosome.
 """
 function extract_regions(gff_entries::Vector{GFF3.Record}, chrom::String, regtype="gene")
     features = gff_entries .|> GFF3.featuretype |> Set
@@ -345,9 +332,10 @@ end
 
 
 """
-    merge_ranges(r1::Vector{UnitRange{Int}}, r2::Vector{UnitRange{Int}})::Vector{UnitRange{Int}}
+    merge_ranges(r1, r2)
 
-Объединяет пересекающиеся диапазоны из двух списков.
+Combine and simplify overlapping or adjacent genomic ranges. Takes two vectors of ranges 
+and returns a single vector of non-overlapping ranges that cover all original positions.
 """
 function merge_ranges(r1::T, r2::T)::T where T <: Vector{UnitRange{Int64}}
     isempty(r1) && return r2
@@ -374,25 +362,22 @@ function merge_ranges(r1::T, r2::T)::T where T <: Vector{UnitRange{Int64}}
 end
 
 """
-    merge_ranges(vr::Vector{Vector{UnitRange{Int}}})::Vector{UnitRange{Int}}
+    merge_ranges(vr)
 
-Объединяет все диапазоны из списка списков.
+Combine multiple sets of genomic ranges into a single simplified set. Accepts a vector 
+of range vectors and returns merged ranges through successive pairwise merging.
 """
 function merge_ranges(vr::Vector{T})::T where T <: Vector{UnitRange{Int64}}
     reduce(merge_ranges, vr)
 end
 
-"""
-    merge_ranges(r::Vector{UnitRange{Int}})::Vector{UnitRange{Int}}
-
-Объединяет пересекающиеся диапазоны в списке.
-"""
 merge_ranges(r::Vector{UnitRange{Int64}})::Vector{UnitRange{Int64}} = merge_ranges(r, r)
 
 """
-    range_intersection_matrix(ranges::Vector{UnitRange{Int}})::Matrix{Int}
+    range_intersection_matrix(ranges)
 
-Создает матрицу пересечений диапазонов (1 если пересекаются, иначе 0).
+Create an adjacency matrix showing pairwise range overlaps. Matrix elements are 1 if ranges 
+i and j overlap (or touch), 0 otherwise. Diagonal represents self-comparisons.
 """
 function range_intersection_matrix(ranges::Vector{UnitRange{Int}})
     isintersecting(r1, r2) = !(r1.stop < r2.start || r2.stop < r1.start)
@@ -404,9 +389,10 @@ function range_intersection_matrix(ranges::Vector{UnitRange{Int}})
 end
 
 """
-    intersections_per_gene(locuses::Vector{UnitRange{Int}})::Vector{Int}
+    intersections_per_gene(locuses)
 
-Считает количество пересечений для каждой гены в списке.
+Calculate overlap frequency for genomic features. Returns a vector where each element 
+indicates how many other ranges intersect with the corresponding input range.
 """
 function intersections_per_gene(locuses::Vector{UnitRange{Int}})
     IM = range_intersection_matrix(locuses)
@@ -415,9 +401,10 @@ function intersections_per_gene(locuses::Vector{UnitRange{Int}})
 end
 
 """
-    len_intersection_matrix(ranges::Vector{UnitRange{Int}})::Matrix{Int}
+    len_intersection_matrix(ranges)
 
-Создает матрицу длин пересечений между диапазонами.
+Create a matrix of basepair overlap lengths between genomic ranges. Only calculates 
+upper triangle values to avoid duplicate computations between range pairs.
 """
 function len_intersection_matrix(ranges::Vector{UnitRange{Int}})
     n = length(ranges)
@@ -434,9 +421,10 @@ function len_intersection_matrix(ranges::Vector{UnitRange{Int}})
 end
 
 """
-    intersections_length_per_gene(locuses::Vector{UnitRange{Int}})::Vector{Int}
+    intersections_length_per_gene(locuses)
 
-Считает суммарную длину пересечений для каждой гена.
+Calculate total overlap length per genomic feature. Returns a vector where each element 
+represents the sum of all basepair overlaps between a range and others in the set.
 """
 function intersections_length_per_gene(locuses::Vector{UnitRange{Int}})
     LIM = len_intersection_matrix(locuses)
@@ -444,11 +432,12 @@ function intersections_length_per_gene(locuses::Vector{UnitRange{Int}})
     return intersection_lengths
 end
 
-
 """
-    longest_subcontig(subinters::Vector{UnitRange{Int}}, inters::Vector{UnitRange{Int}})::Vector{UnitRange{Int}}
+    longest_subcontig(subinters, inters)
 
-Находит наибольшие подинтервалы, полностью вложенные в заданные интервалы.
+Find maximal continuous subregions within reference intervals. For each interval in `inters`, 
+identifies the largest contiguous span covered by ranges from `subinters` that are fully 
+contained within it.
 """
 function longest_subcontig(subinters::Vector{UnitRange{Int}}, inters::Vector{UnitRange{Int}})
     result = Vector{UnitRange{Int}}()
@@ -466,9 +455,11 @@ function longest_subcontig(subinters::Vector{UnitRange{Int}}, inters::Vector{Uni
 end
 
 """
-    intersection_lengths(ref::Vector{UnitRange{Int}}, item::Vector{UnitRange{Int}})::Vector{Int}
+    intersection_lengths(ref, item)
 
-Считает длины пересечений между всеми парами диапазонов.
+Calculate pairwise overlap lengths between two sets of genomic ranges. Returns all 
+intersection lengths between ranges from `ref` and `item`, including multiple overlaps 
+for nested features.
 """
 function intersection_lengths(ref::Vector{UnitRange{Int}}, item::Vector{UnitRange{Int}})
     result = Int[]
@@ -488,9 +479,11 @@ end
 
 
 """
-    intersection_ratios(ref::Vector{UnitRange{Int}}, item::Vector{UnitRange{Int}})::Vector{Float64}
+    intersection_ratios(ref, item)
 
-Считает доли пересечений относительно длины справочных диапазонов.
+Calculate proportional overlaps between reference and query ranges. Returns ratios of 
+intersection lengths relative to reference range lengths, useful for measuring coverage 
+efficiency.
 """
 function intersection_ratios(ref::Vector{UnitRange{Int}}, item::Vector{UnitRange{Int}})
     result = Float64[]
