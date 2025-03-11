@@ -29,17 +29,17 @@ function parse_commandline()
         usage="""
         cluster_genomes.jl -i INPUT-DIR [-o OUTPUT-DIR] [-t TRESHOLD] [-m CLUSTER-METHOD] [-p COMPLETENESS-from [- CONTAMINATION-MAX] [-g CONTIGS-MAX] [-r TRNA-MIN] [-n N50-MIN] [-h]
 
-        1. Fetch GTDB metadata+tree via hardcoded links (skip if both files are present)
-        2. Cluster the tree using TreeCluster.py with chosen algorithm and threshold
-        3. Leave accessions, present in tree file
-        4. Apply: chosen filters ∪ ncbi_rrna_count≠"none" ∪ ncbi_assembly_level∈{"Complete Genome", "Chromosome"}
+        1. Fetch GTDB metadata+tree via hardcoded links into --input-dir (or read them from there, if they are there);
+        2. Cluster the tree using TreeCluster.py with chosen algorithm and threshold;
+        3. Filter out accessions, that are not present in the tree file
+        4. Filter out using c.l.arg. filters ∪ ncbi_rrna_count≠"none" ∪ ncbi_assembly_level∈{"Complete Genome", "Chromosome"}
         5. Rename accessions to match GenBank naming (eg.: RS_GCF_000657795.2 -> GCF_000657795.2)
         6. Resulting files in `--output-dir`:
-            - `sankey_filter.html`: PlotlyJS page visualising filtering steps as https://en.wikipedia.org/wiki/Sankey_diagram
-            - `filtering_report.json`: report with used parameters, intermediate sample sizes and final stats
-            - `filtered_accessions.tsv`: table with all filtered accessions and their relevant fields
-            - `train.tsv`: subset of filtered data, where from each cluster a single accession is taken
-            - `validation.tsv`: subset of filtered {data\\train}, where from each cluster a single accession is taken
+            - `cg_sankey.html`: PlotlyJS page visualising filtering steps as https://en.wikipedia.org/wiki/Sankey_diagram
+            - `cg_report.json`: report with used parameters, intermediate sample sizes and final stats
+            - `cg_hq.tsv`: table with remaining high quality accessions and their relevant fields
+            - `cg_train.tsv`: subset of filtered data, where from each cluster a single accession is taken
+            - `cg_valid.tsv`: subset of filtered {data\\train}, where from each cluster a single accession is taken
         """)
 
     @add_arg_table! s begin
@@ -136,11 +136,11 @@ function main()
     mkpath(dir_out)
 
     # all output filenames
-    output_sankey_filter = joinpath(dir_out, "sankey_filter.html")
-    output_json = joinpath(dir_out, "filtering_report.json")
-    output_all_accessions = joinpath(dir_out, "filtered_accessions.tsv")
-    train_filename = joinpath(dir_out, "train.tsv")
-    validation_filename = joinpath(dir_out, "validation.tsv")
+    output_sankey_filter = joinpath(dir_out, "cg_sankey.html")
+    output_json = joinpath(dir_out, "cg_report.json")
+    output_all_accessions = joinpath(dir_out, "cg_hq.tsv")
+    train_filename = joinpath(dir_out, "cg_train.tsv")
+    validation_filename = joinpath(dir_out, "cg_valid.tsv")
     
     metadata_file = joinpath(dir_in, "bac120_metadata_r220.tsv")
     tree_file = joinpath(dir_in, "bac120_r220.tree")
