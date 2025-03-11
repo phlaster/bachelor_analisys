@@ -183,48 +183,6 @@ function Base.show(io::IO, cm::ConfusionMTR)
 end
 
 """
-    precision(CM::ConfusionMTR)
-
-Calculate precision (positive predictive value) from a confusion matrix. Precision represents 
-the proportion of true positive predictions among all positive predictions made by the model.
-"""
-function precision(CM::ConfusionMTR)
-    return CM.TP / (CM.TP + CM.FP)
-end
-
-"""
-    recall(CM::ConfusionMTR)
-
-Calculate recall (sensitivity) from a confusion matrix. Recall measures the proportion of 
-actual positives correctly identified by the model from all positive instances in the data.
-"""
-function recall(CM::ConfusionMTR)
-    return CM.TP / (CM.TP + CM.FN)
-end
-
-"""
-    f1_score(CM::ConfusionMTR)
-
-Compute the F1-score, the harmonic mean of precision and recall. Provides a balanced 
-measure of model performance that accounts for both false positives and false negatives.
-"""
-function f1_score(CM::ConfusionMTR)
-    prec = precision(CM)
-    rec = recall(CM)
-    return 2 * (prec * rec) / (prec + rec)
-end
-
-"""
-    false_dr(CM::ConfusionMTR)
-
-Calculate the False Discovery Rate (FDR), representing the proportion of false positives 
-among all positive predictions. Complementary to precision (FDR = 1 - precision).
-"""
-function false_dr(CM::ConfusionMTR)
-    return CM.FP / (CM.TP + CM.FP)
-end
-
-"""
     open_gff(name)
 
 Read and parse a GFF3 file, returning all records as a vector.
