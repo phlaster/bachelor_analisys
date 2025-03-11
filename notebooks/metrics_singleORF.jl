@@ -28,10 +28,10 @@ println(io, " phase: ", hasphase(record)       ? phase(record) : "<...>")
 @plutoinclude "../src/utils.jl"
 
 # ╔═╡ 94f0d899-b0e9-4cfe-907c-23744c91abfe
-reference_file = "../DATA/GCF_004306555.1_ASM430655v1_genomic.gff";
+reference_file = "../DATA/indiv_genomes/SM52/GCF_004306555.1_ASM430655v1_genomic.gff";
 
 # ╔═╡ cd51d4b0-63be-4491-9f36-196a68d37a7d
-helixer_dir = "../DATA/helixer_results/"
+helixer_dir = "../DATA/helixer_annot/SM52"
 
 # ╔═╡ b6eabca1-2c13-48f4-9e86-3714b32b7910
 helixer_files = filter(endswith(".gff"), readdir(helixer_dir, join=true))
