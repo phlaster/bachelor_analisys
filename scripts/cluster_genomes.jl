@@ -1,10 +1,12 @@
 #!/usr/bin/env julia
 const PROJECT_DIR = dirname(@__DIR__)
 const UTILS_FILE = joinpath(PROJECT_DIR, "src", "utils.jl")
+const PLOTS_FILE = joinpath(PROJECT_DIR, "src", "plots.jl")
 
 using Pkg
 Pkg.activate(PROJECT_DIR, io=devnull)
 include(UTILS_FILE)
+include(PLOTS_FILE)
 
 using ArgParse
 using DataFrames
