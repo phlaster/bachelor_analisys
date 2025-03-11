@@ -12,8 +12,35 @@ using GFF3
 using DataFrames
 using PrettyTables
 using ProgressMeter
+using ColorSchemes
 
 Base.show(io::IO, x::Float64) = print(io, format(x, precision=3))
+
+function colored_table(mtr; header, columns_with_numbers)
+    hl = color_cols -> Highlighter(
+        (data, i, j) -> begin
+             j in color_cols && (data[i, j] isa Number) && (0 <= data[i, j] <= 1)
+        end,
+        (h, data, i, j) -> begin
+             val = data[i, j]
+             color = get(ColorSchemes.coolwarm, val, (0, 1))
+             return Crayon(foreground = (
+                 round(Int, color.r * 255),
+                 round(Int, color.g * 255),
+                 round(Int, color.b * 255)
+             ))
+        end
+    )
+
+    pretty_table(mtr;
+        crop = :none,
+        tf=tf_borderless,
+        header=header,
+        highlighters = hl(columns_with_numbers),
+        formatters = ft_printf("%.3f")
+    )
+end
+
 
 function parse_commandline()
     s = ArgParseSettings()
@@ -24,7 +51,7 @@ function parse_commandline()
 
     @add_arg_table! s begin
         "-r", "--ref"
-            help = "Filename with reference annotation"
+            help = "Reference .gff file (ground truth annotation)"
             required = true
             arg_type = String
         "-d", "--dir"
@@ -55,7 +82,6 @@ function extract_grouped_ranges(filename::String)
     return grouped
 end
 
-### Compute Performance Scores from TP, FP, FN
 function compute_scores(TP, FP, FN)
     prec = (TP + FP) > 0 ? TP / (TP + FP) : 0.0
     rec = (TP + FN) > 0 ? TP / (TP + FN) : 0.0
@@ -64,28 +90,93 @@ function compute_scores(TP, FP, FN)
     return (prec=prec, rec=rec, f1=f1, fdr=fdr)
 end
 
-### Main Function
+function compute_overall_scores(reference_grouped, helixer_grouped, helixer_files, ref_keys)
+    total_CMs = @NamedTuple{TP::Int64, FP::Int64, FN::Int64}[]
+    for hg in helixer_grouped
+        total_TP = 0
+        total_FP = 0
+        total_FN = 0
+        for key in ref_keys
+            ref_ranges = get(reference_grouped, key, UnitRange{Int}[])
+            pred_ranges = get(hg, key, UnitRange{Int}[])
+            cm = ConfusionMTR(ref_ranges, pred_ranges)
+            total_TP += cm.TP
+            total_FP += cm.FP
+            total_FN += cm.FN
+        end
+        push!(total_CMs, (TP=total_TP, FP=total_FP, FN=total_FN))
+    end
+
+    total_TP_comb = 0
+    total_FP_comb = 0
+    total_FN_comb = 0
+    for key in ref_keys
+        ref_ranges = get(reference_grouped, key, UnitRange{Int}[])
+        all_pred_ranges = UnitRange{Int}[]
+        for hg in helixer_grouped
+            append!(all_pred_ranges, get(hg, key, UnitRange{Int}[]))
+        end
+        merged_ranges = merge_ranges(all_pred_ranges)
+        cm = ConfusionMTR(ref_ranges, merged_ranges)
+        total_TP_comb += cm.TP
+        total_FP_comb += cm.FP
+        total_FN_comb += cm.FN
+    end
+
+    data = Vector{Union{String, Float64}}[]
+    for (i, cm) in enumerate(total_CMs)
+        scores = compute_scores(cm.TP, cm.FP, cm.FN)
+        sample_name = first(split(basename(helixer_files[i]), '.'))
+        push!(data, [string(sample_name), scores.prec, scores.rec, scores.f1, scores.fdr])
+    end
+    scores_comb = compute_scores(total_TP_comb, total_FP_comb, total_FN_comb)
+    push!(data, ["combined", scores_comb.prec, scores_comb.rec, scores_comb.f1, scores_comb.fdr])
+
+    return data
+end
+
+function add_sample_rows(df, sample_name, reference_grouped, grouped, ref_keys)
+    total_TP = 0
+    total_FP = 0
+    total_FN = 0
+    for key in ref_keys
+        ref_ranges = get(reference_grouped, key, UnitRange{Int}[])
+        pred_ranges = get(grouped, key, UnitRange{Int}[])
+        cm = ConfusionMTR(ref_ranges, pred_ranges)
+        total_TP += cm.TP
+        total_FP += cm.FP
+        total_FN += cm.FN
+    end
+    scores = compute_scores(total_TP, total_FP, total_FN)
+    push!(df, (sample_name, "overall", "both", scores.prec, scores.rec, scores.f1, scores.fdr))
+
+    for (chrom, strand) in ref_keys
+        ref_ranges = get(reference_grouped, (chrom, strand), UnitRange{Int}[])
+        pred_ranges = get(grouped, (chrom, strand), UnitRange{Int}[])
+        cm = ConfusionMTR(ref_ranges, pred_ranges)
+        scores = compute_scores(cm.TP, cm.FP, cm.FN)
+        push!(df, (sample_name, chrom, strand, scores.prec, scores.rec, scores.f1, scores.fdr))
+    end
+end
+
 function main()
     args = parse_commandline()
     reference_file = args["ref"]
     helixer_dir = args["dir"]
     detailed = args["detailed"]
 
-    # Find annotation files
     helixer_files = filter(endswith(r".[gG][fF][fF]3?"), readdir(helixer_dir, join=true))
     if isempty(helixer_files)
         println("No annotation files found in $helixer_dir\nOnly `.gff` files are accepted.")
         exit()
     end
 
-    # Extract grouped ranges
     reference_grouped = extract_grouped_ranges(reference_file)
     helixer_grouped = [extract_grouped_ranges(file) for file in helixer_files]
     ref_keys = collect(keys(reference_grouped))
     sort!(ref_keys)  # Ensure consistent order
 
     if detailed
-        # Initialize DataFrame for detailed output
         df = DataFrame(
             Sample=String[],
             Chromosome=String[],
@@ -96,41 +187,12 @@ function main()
             FDR=Float64[]
         )
 
-        # Function to add rows for a sample
-        function add_sample_rows(sample_name, grouped)
-            # Overall scores
-            total_TP = 0
-            total_FP = 0
-            total_FN = 0
-            for key in ref_keys
-                ref_ranges = get(reference_grouped, key, UnitRange{Int}[])
-                pred_ranges = get(grouped, key, UnitRange{Int}[])
-                cm = ConfusionMTR(ref_ranges, pred_ranges)
-                total_TP += cm.TP
-                total_FP += cm.FP
-                total_FN += cm.FN
-            end
-            scores = compute_scores(total_TP, total_FP, total_FN)
-            push!(df, (sample_name, "overall", "both", scores.prec, scores.rec, scores.f1, scores.fdr))
-
-            # Per chromosome and strand
-            for (chrom, strand) in ref_keys
-                ref_ranges = get(reference_grouped, (chrom, strand), UnitRange{Int}[])
-                pred_ranges = get(grouped, (chrom, strand), UnitRange{Int}[])
-                cm = ConfusionMTR(ref_ranges, pred_ranges)
-                scores = compute_scores(cm.TP, cm.FP, cm.FN)
-                push!(df, (sample_name, chrom, strand, scores.prec, scores.rec, scores.f1, scores.fdr))
-            end
-        end
-
-        # Add rows for each annotation file
         @showprogress for (i, file) in enumerate(helixer_files)
             sample_name = first(split(basename(file), '.'))
-            add_sample_rows(sample_name, helixer_grouped[i])
+            add_sample_rows(df, sample_name, reference_grouped, helixer_grouped[i], ref_keys)
         end
         clear_last_lines(1)
 
-        # Compute and add combined annotations
         combined_grouped = Dict()
         for key in ref_keys
             all_pred_ranges = UnitRange{Int}[]
@@ -140,59 +202,20 @@ function main()
             merged_ranges = merge_ranges(all_pred_ranges)
             combined_grouped[key] = merged_ranges
         end
-        add_sample_rows("combined", combined_grouped)
+        add_sample_rows(df, "combined", reference_grouped, combined_grouped, ref_keys)
 
-        # Print detailed table
         println("Detailed annotation scores:")
-        pretty_table(df)
+        colored_table(Matrix(df);
+            header=names(df),
+            columns_with_numbers=(4,5,6,7)
+        )
     else
-        # Compute overall scores for each annotation
-        total_CMs = []
-        for hg in helixer_grouped
-            total_TP = 0
-            total_FP = 0
-            total_FN = 0
-            for key in ref_keys
-                ref_ranges = get(reference_grouped, key, UnitRange{Int}[])
-                pred_ranges = get(hg, key, UnitRange{Int}[])
-                cm = ConfusionMTR(ref_ranges, pred_ranges)
-                total_TP += cm.TP
-                total_FP += cm.FP
-                total_FN += cm.FN
-            end
-            push!(total_CMs, (TP=total_TP, FP=total_FP, FN=total_FN))
-        end
-
-        # Compute overall scores for combined annotations
-        total_TP_comb = 0
-        total_FP_comb = 0
-        total_FN_comb = 0
-        for key in ref_keys
-            ref_ranges = get(reference_grouped, key, UnitRange{Int}[])
-            all_pred_ranges = UnitRange{Int}[]
-            for hg in helixer_grouped
-                append!(all_pred_ranges, get(hg, key, UnitRange{Int}[]))
-            end
-            merged_ranges = merge_ranges(all_pred_ranges)
-            cm = ConfusionMTR(ref_ranges, merged_ranges)
-            total_TP_comb += cm.TP
-            total_FP_comb += cm.FP
-            total_FN_comb += cm.FN
-        end
-
-        # Prepare data for overall scores table
-        data = []
-        for (i, cm) in enumerate(total_CMs)
-            scores = compute_scores(cm.TP, cm.FP, cm.FN)
-            sample_name = first(split(basename(helixer_files[i]), '.'))
-            push!(data, [sample_name, scores.prec, scores.rec, scores.f1, scores.fdr])
-        end
-        scores_comb = compute_scores(total_TP_comb, total_FP_comb, total_FN_comb)
-        push!(data, ["combined", scores_comb.prec, scores_comb.rec, scores_comb.f1, scores_comb.fdr])
-
-        # Print overall scores
+        data = compute_overall_scores(reference_grouped, helixer_grouped, helixer_files, ref_keys)
         println("Overall annotation scores:")
-        pretty_table(permutedims(hcat(data...)); header=["Sample", "Precision", "Recall", "F1", "FDR"])
+        colored_table(permutedims(hcat(data...));
+            header=["Sample", "Precision", "Recall", "F1", "FDR"],
+            columns_with_numbers=(2,3,4,5)
+        )
     end
 end
 
