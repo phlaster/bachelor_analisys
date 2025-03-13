@@ -19,7 +19,6 @@ function check_dependencies(execs)
             exit(1)
         end
     end
-    @info "All dependencies found"
 end
 
 function wait_tasks(tasks::Vector{Task})

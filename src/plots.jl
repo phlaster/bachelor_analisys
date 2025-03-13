@@ -88,7 +88,7 @@ function create_sankey(steps::Vector{Pair{Int64, String}}; savefile=nothong)
 	)
     if !isnothing(savefile)
         PlotlyJS.savefig(plt, savefile)
-        @info "Sankey diagrame saved to $savefile"
+        @info "Sankey diagram saved to $savefile"
     end
     return plt
 end
