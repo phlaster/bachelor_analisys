@@ -43,8 +43,7 @@ function parse_commandline()
     return parse_args(s)
 end
 
-# Download a single accession
-function download_accession(accession::AbstractString, output_dir::AbstractString, max_retries::Int, min_duration::Ref{Float64})
+function download_accession(accession::AbstractString, output_dir::AbstractString, max_retries::Int)
     archive_dir = joinpath(output_dir, "archives")
     mkpath(archive_dir)
     archive_path = joinpath(archive_dir, "$accession.zip")
@@ -52,31 +51,16 @@ function download_accession(accession::AbstractString, output_dir::AbstractStrin
 
     attempts = 0
     success = false
-    duration = 0.0
 
     while attempts < max_retries && !success
         attempts += 1
         rm(archive_part, force=true)
 
-        # @info "Attempt $attempts of $max_retries for accession $accession"
-        start_time = now()
         try
-            cmd = pipeline(`datasets download genome accession $accession --include genome,gff3 --filename $archive_part`, devnull)
+            cmd = pipeline(`datasets download genome accession $accession --include genome,gff3 --filename $archive_part`, stdout=devnull, stderr=devnull)
             run(cmd)
-            duration = (now() - start_time).value / 1000
-
-            if min_duration[] != -1 && duration > 3 * min_duration[]
-                @warn "Accession $accession: Download took $(duration)s (> $(3 * min_duration[])s), retrying..."
-                continue
-            end
-
-            if min_duration[] == -1 || duration < min_duration[]
-                min_duration[] = duration
-            end
-
             mv(archive_part, archive_path, force=true)
             success = true
-            # @info "Accession $accession: Downloaded successfully in $(duration)s"
         catch e
             @warn "Accession $accession: Attempt $attempts failed: $e"
             if attempts == max_retries
@@ -94,7 +78,7 @@ function extract_archives(output_dir::String; force=false)
     mkpath(genome_dir)
     
     zips = filter(f -> endswith(f, ".zip"), readdir(archive_dir, join=true))
-    prog = Progress(length(zips))
+    prog = Progress(length(zips); desc="Extracting archives")
     @threads for zip in zips
         accession = splitext(basename(zip))[1]
         extraction_dir = joinpath(genome_dir, accession)
@@ -103,9 +87,9 @@ function extract_archives(output_dir::String; force=false)
         target_gff = joinpath(extraction_dir, "$accession.gff")
         target_json = joinpath(extraction_dir, "$accession.json")
 
-        if any(isfile, [target_fna, target_gff, target_json]) && !force
-            error("$extraction_dir has name collisions")
-            exit()
+        if all(isfile, [target_fna, target_gff, target_json]) && !force
+            next!(prog)
+            continue
         end
         
         temp_dir = mktempdir()
@@ -114,39 +98,81 @@ function extract_archives(output_dir::String; force=false)
             
             data_dir = joinpath(temp_dir, "ncbi_dataset", "data", accession)
             if isdir(data_dir)
-                fna_files = filter(f -> endswith(f, "_genomic.fna"), readdir(data_dir))
-                if length(fna_files) == 1
-                    original_fna = joinpath(data_dir, fna_files[1])
-                    mv(original_fna, target_fna, force=true)
+                # Handle .fna file
+                fna_files = filter(f -> endswith(f, "_genomic.fna"), readdir(data_dir, join=true))
+                if !isempty(fna_files)
+                    mv(first(fna_files), target_fna, force=true)
                 else
-                    @warn "Expected one _genomic.fna file in $data_dir, found $(length(fna_files))"
+                    @warn "No _genomic.fna file found in $data_dir for $accession"
                 end
                 
-                original_gff = joinpath(data_dir, "genomic.gff")
-                if isfile(original_gff)
-                    mv(original_gff, target_gff, force=true)
+                # Handle .gff file
+                gff_files = filter(f -> endswith(f, "genomic.gff"), readdir(data_dir, join=true))
+                if !isempty(gff_files)
+                    mv(first(gff_files), target_gff, force=true)
                 else
-                    @warn "GFF file missing in $data_dir"
+                    @warn "GFF file missing in $data_dir for $accession"
                 end
             else
                 @warn "Data directory not found for $accession"
             end
             
-            json_file = joinpath(temp_dir, "ncbi_dataset", "data", "assembly_data_report.jsonl")
-            if isfile(json_file)
-                mv(json_file, target_json, force=true)
+            # Handle .json file
+            json_files = filter(f -> endswith(f, "assembly_data_report.jsonl"), readdir(joinpath(temp_dir, "ncbi_dataset", "data"), join=true))
+            if !isempty(json_files)
+                mv(first(json_files), target_json, force=true)
             else
                 @warn "Assembly report JSON missing for $accession"
             end
-            
-            rm(temp_dir, recursive=true)
+
+            # Check if all required files are present; remove directory if not
+            if !all(isfile, [target_fna, target_gff, target_json])
+                @warn "Incomplete extraction for $accession: missing one or more files. Removing directory."
+                rm(extraction_dir, recursive=true, force=true)
+            end
         catch e
             @error "Failed to process $zip for $accession: $e (Thread $(threadid()))"
+            rm(extraction_dir, recursive=true, force=true)  # Clean up on error
+        finally
             rm(temp_dir, recursive=true, force=true)
         end
         next!(prog)
     end
+    clear_last_lines(1)
     @info "Extraction and reorganization completed"
+end
+
+function verify_extracted_directories(output_dir::String)
+    genome_dir = joinpath(output_dir, "genomes")
+    
+    if !isdir(genome_dir)
+        @warn "Genomes directory not found: $genome_dir. Skipping verification."
+        return
+    end
+    
+    subdirs = filter(d -> isdir(joinpath(genome_dir, d)), readdir(genome_dir))
+    
+    if isempty(subdirs)
+        @info "No extracted directories found in $genome_dir. Verification complete."
+        return
+    end
+    
+    @showprogress desc="Final verification" for subdir in subdirs
+        extraction_dir = joinpath(genome_dir, subdir)
+        target_fna = joinpath(extraction_dir, "$subdir.fna")
+        target_gff = joinpath(extraction_dir, "$subdir.gff")
+        target_json = joinpath(extraction_dir, "$subdir.json")
+        
+        files = readdir(extraction_dir)
+        
+        expected_files = [target_fna, target_gff, target_json]
+        if !all(isfile, expected_files) || length(files) != 3
+            @warn "Directory $subdir is invalid: expected exactly 3 files (.fna, .gff, .json). Found: $(length(files)). Removing directory."
+            rm(extraction_dir, recursive=true, force=true)
+        end
+    end
+    clear_last_lines(1)
+    @info "Final verification of extracted directories completed."
 end
 
 function main()
@@ -179,27 +205,33 @@ function main()
     end
     @info "Processing $(length(accessions_to_download)) accessions with $parallel parallel downloads"
 
-    min_duration = Ref{Float64}(-1)
-    active_tasks = Task[]
+    sem = Channel{Bool}(parallel)
+    for i in 1:parallel
+        put!(sem, true)
+    end
+
+    tasks = Task[]
     failed_accessions = String[]
+    failed_lock = ReentrantLock()
 
-    @showprogress desc="Downloading accessions" for accession in accessions_to_download
-        while length(active_tasks) >= parallel
-            finished_task = wait_tasks(active_tasks)
-            filter!(t -> t !== finished_task, active_tasks)
-        end
-
+    @showprogress desc="Downloading accessions" barlen=40 showspeed=true for accession in accessions_to_download
+        take!(sem)
         task = @async begin
-            success = download_accession(accession, output_dir, max_retries, min_duration)
-            if !success
-                push!(failed_accessions, accession)
+            try
+                success = download_accession(accession, output_dir, max_retries)
+                if !success
+                    lock(failed_lock)
+                    push!(failed_accessions, accession)
+                    unlock(failed_lock)
+                end
+            finally
+                put!(sem, true)
             end
         end
-        push!(active_tasks, task)
+        push!(tasks, task)
     end
-    clear_last_lines(1)
 
-    for task in active_tasks
+    for task in tasks
         wait(task)
     end
 
@@ -211,6 +243,7 @@ function main()
 
     if extract
         extract_archives(output_dir; force=force)
+        verify_extracted_directories(output_dir)
     end
 
     @info "Download process completed"
