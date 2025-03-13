@@ -17,9 +17,11 @@ using Printf
 using JSON3
 using StatsBase
 using Chain
+using ProgressMeter
 
 const METADATA_URL = "https://data.ace.uq.edu.au/public/gtdb/data/releases/release220/220.0/bac120_metadata_r220.tsv.gz"
 const TREE_URL = "https://data.ace.uq.edu.au/public/gtdb/data/releases/release220/220.0/bac120_r220.tree.gz"
+const CLUSTERS_URL = "https://data.ace.uq.edu.au/public/gtdb/data/releases/release220/220.0/auxillary_files/sp_clusters_r220.tsv"
 const GENBANK_PATTERN = r"GC[AF]_\d+\.\d+"
 extract_accession(acc) = match(GENBANK_PATTERN, acc).match
 
@@ -31,7 +33,8 @@ function parse_commandline()
         usage="""
         cluster_genomes.jl -i INPUT-DIR [-o OUTPUT-DIR] [-t TRESHOLD] [-m CLUSTER-METHOD] [-p COMPLETENESS-from [- CONTAMINATION-MAX] [-g CONTIGS-MAX] [-r TRNA-MIN] [-n N50-MIN] [-h]
 
-        1. Fetch GTDB metadata+tree via hardcoded links into --input-dir (or read them from there, if they are there);
+        1. Fetch GTDB metadata+tree+sp_clusters via hardcoded links into --input-dir (or read them from there, if they are there);
+        2. For each leaf in tree file find a representative in same cluster, which has either "Complete Genome" or "Chromosome" status, then write the new substituted tree file.
         2. Cluster the tree using TreeCluster.py with chosen algorithm and threshold;
         3. Filter out accessions, that are not present in the tree file
         4. Filter out using c.l.arg. filters ∪ ncbi_rrna_count≠"none" ∪ ncbi_assembly_level∈{"Complete Genome", "Chromosome"}
@@ -101,19 +104,67 @@ function download_file(url, dest)
         @info "Downloading $url..."
         gz_file = tempname()
         Downloads.download(url, gz_file)
-        open(dest, "w") do out
-            GZip.open(gz_file) do inp
-                write(out, read(inp))
+        if endswith(url, ".gz")
+            open(dest, "w") do out
+                GZip.open(gz_file) do inp
+                    write(out, read(inp))
+                end
+            end
+            rm(gz_file)
+        else
+            mv(gz_file, dest)
+        end
+    end
+end
+
+function parse_tree_leaves(tree_file::String)
+    tree_str = read(tree_file, String)
+    leaves = Set{String}(m.match for m in eachmatch(GENBANK_PATTERN, tree_str))
+    return collect(leaves)
+end
+
+function substitute_tree_representatives(tree_file::String, clusters_file::String, metadata_file::String, output_tree_file::String)
+    metadata_df = DataFrame(CSV.File(metadata_file, delim='\t', header=true, ignorerepeated=true))
+    transform!(metadata_df, :accession => ByRow(extract_accession) => :accession)
+    
+    clusters_df = DataFrame(CSV.File(clusters_file, delim='\t', header=true))
+    transform!(clusters_df, :("Representative genome") => ByRow(extract_accession) => :representative)
+    transform!(clusters_df, :("Clustered genomes") => ByRow(x -> split(x, ",")) => :clustered)
+
+    hq_genomes = filter(r -> r.ncbi_assembly_level in ["Complete Genome", "Chromosome"], metadata_df)
+    hq_dict = Dict(r.accession => r.ncbi_assembly_level for r in eachrow(hq_genomes))
+
+    sub_dict = Dict{String, String}()
+    @showprogress desc = "Build substitution map" for row in eachrow(clusters_df)
+        rep = row.representative
+        if haskey(hq_dict, rep)
+            sub_dict[rep] = rep  # Representative is already high-quality
+        else
+            # Find a high-quality genome in the cluster
+            for acc in row.clustered
+                acc_clean = extract_accession(acc)
+                if haskey(hq_dict, acc_clean)
+                    sub_dict[rep] = acc_clean
+                    break
+                end
             end
         end
-        rm(gz_file)
     end
+
+    tree_str = read(tree_file, String)
+    for (old, new) in sub_dict
+        if old != new
+            tree_str = replace(tree_str, old => new)
+        end
+    end
+    write(output_tree_file, tree_str)
+    @info "Substituted tree written to $output_tree_file"
+    return sub_dict
 end
 
 function pick_one_per_cluster(df::DataFrame; skip=String[])
     df_filtered = filter(row -> !(row.accession in skip), df)
     groups = groupby(df_filtered, :cluster)
-    
     picks = String[]
     for g in groups
         if first(g.cluster) == -1
@@ -122,10 +173,8 @@ function pick_one_per_cluster(df::DataFrame; skip=String[])
             push!(picks, first(g.accession))
         end
     end
-    
     return picks
 end
-
 
 function main()
     args = parse_commandline()
@@ -133,10 +182,8 @@ function main()
 
     dir_in = abspath(args["input-dir"])
     dir_out = isnothing(args["output-dir"]) ? dir_in : args["output-dir"]
-
     threshold = args["treshold"]
     method = args["cluster-method"]
-
     completeness_min = args["completeness-min"]
     contamination_max = args["contamination-max"]
     contig_count_max = args["contigs-max"]
@@ -146,7 +193,6 @@ function main()
     mkpath(dir_in)
     mkpath(dir_out)
 
-    # all output filenames
     output_sankey_filter = joinpath(dir_out, "cg_sankey.html")
     output_json = joinpath(dir_out, "cg_report.json")
     output_all_accessions = joinpath(dir_out, "cg_hq.tsv")
@@ -155,63 +201,51 @@ function main()
     
     metadata_file = joinpath(dir_in, "bac120_metadata_r220.tsv")
     tree_file = joinpath(dir_in, "bac120_r220.tree")
+    clusters_file = joinpath(dir_in, "sp_clusters_r220.tsv")
+    substituted_tree_file = joinpath(dir_in, "bac120_r220_substituted.tree")
 
     download_file(METADATA_URL, metadata_file)
     download_file(TREE_URL, tree_file)
-    
+    download_file(CLUSTERS_URL, clusters_file)
+
+    sub_dict = substitute_tree_representatives(tree_file, clusters_file, metadata_file, substituted_tree_file)
+    @info "Substituted $(length(sub_dict)) representatives"
+
     cluster_file = tempname()
-    @info """Clustering GTDB tree:
+    @info """Clustering substituted GTDB tree:
         method = $method
         thresh = $threshold
     """
-    run(`TreeCluster.py -i $tree_file -o $cluster_file -m $method -t $threshold`)
+    run(`TreeCluster.py -i $substituted_tree_file -o $cluster_file -m $method -t $threshold`)
     cluster_df = DataFrame(CSV.File(cluster_file, delim='\t', header=true), ["accession", "cluster"])
     transform!(cluster_df, :accession => ByRow(extract_accession) => :accession)
     GTDB_tree_leaves = nrow(cluster_df)
-    @info "GTDB tree leaves count: $GTDB_tree_leaves"
-
+    @info "Substituted tree leaves count: $GTDB_tree_leaves"
 
     metadata_df = DataFrame(CSV.File(metadata_file, delim='\t', header=true, ignorerepeated=true))
     gtdb_genomes_count = nrow(metadata_df)
     @info "GTDB genomes count: $gtdb_genomes_count"
 
-    @info """
-    Filtering genome metadata:
-        completeness ≥ $completeness_min%
-        contamination ≤ $contamination_max%
-        contig count ≤ $contig_count_max
-        tRNA count ≥ $trna_count_min
-        N50 score ≥ $n50_min
-    """
     filter_steps = Pair{Int64, String}[]
     joined_df = @chain metadata_df begin
-        @aside push!(filter_steps, nrow(_)=>"In metadata file")
-
+        @aside push!(filter_steps, nrow(_) => "In metadata file")
         transform!(_, :accession => ByRow(extract_accession) => :accession)
-    
         innerjoin(_, cluster_df, on=:accession)
-        @aside push!(filter_steps, nrow(_)=>"In tree file")
-        
-        filter(r->r.ncbi_assembly_level in ["Complete Genome", "Chromosome"], _)
-        @aside push!(filter_steps, nrow(_)=>"Genome+Chromosome")
-        
-        filter(r->!(r.ncbi_rrna_count in ["none", "0"]), _)
-        @aside push!(filter_steps, nrow(_)=>">0 rRNA")
-        
-        filter(r->min(r.checkm2_completeness, r.checkm_completeness) ≥ completeness_min, _)
-        @aside push!(filter_steps, nrow(_)=>"completeness>$completeness_min")
-    
-        filter(r->max(r.checkm2_contamination, r.checkm_contamination) ≤ contamination_max, _)
-        @aside push!(filter_steps, nrow(_)=>"contamination<$contamination_max")
-        
-        filter(r->r.contig_count ≤ contig_count_max, _)
-        @aside push!(filter_steps, nrow(_)=>"contigs≤$contig_count_max")
-        
-        filter(r->r.trna_count ≥ trna_count_min, _)
-        @aside push!(filter_steps, nrow(_)=>"tRNA≥$trna_count_min")
-        
-        filter(r->r.n50_contigs ≥ n50_min, _)
-        @aside push!(filter_steps, nrow(_)=>"n50≥$n50_min")
+        @aside push!(filter_steps, nrow(_) => "In substituted tree")
+        filter(r -> r.ncbi_assembly_level in ["Complete Genome", "Chromosome"], _)
+        @aside push!(filter_steps, nrow(_) => "Genome+Chromosome")
+        filter(r -> !(r.ncbi_rrna_count in ["none", "0"]), _)
+        @aside push!(filter_steps, nrow(_) => ">0 rRNA")
+        filter(r -> min(r.checkm2_completeness, r.checkm_completeness) ≥ completeness_min, _)
+        @aside push!(filter_steps, nrow(_) => "completeness>$completeness_min")
+        filter(r -> max(r.checkm2_contamination, r.checkm_contamination) ≤ contamination_max, _)
+        @aside push!(filter_steps, nrow(_) => "contamination<$contamination_max")
+        filter(r -> r.contig_count ≤ contig_count_max, _)
+        @aside push!(filter_steps, nrow(_) => "contigs≤$contig_count_max")
+        filter(r -> r.trna_count ≥ trna_count_min, _)
+        @aside push!(filter_steps, nrow(_) => "tRNA≥$trna_count_min")
+        filter(r -> r.n50_contigs ≥ n50_min, _)
+        @aside push!(filter_steps, nrow(_) => "n50≥$n50_min")
     end
     create_sankey(filter_steps; savefile=output_sankey_filter)
     
@@ -222,11 +256,8 @@ function main()
     n_clusters = haskey(clusters_cm, -1) ? (length(clusters_cm) - 1 + clusters_cm[-1]) : length(clusters_cm)
     singletons = count(==(1), clusters_cm.vals) + get(clusters_cm, -1, 0)
     doubletons = count(==(2), clusters_cm.vals)
-    
-    @info "Clusters count: $n_clusters"
-    chao1 = n_clusters + singletons*(singletons-1)/(2doubletons+1) |> round |> Int
-    @info "Chao1 = $chao1"
-    
+    chao1 = n_clusters + singletons * (singletons - 1) / (2 * doubletons + 1) |> round |> Int
+
     filtered_hq_accessions = Dict(
         "filter_parameters" => Dict(
             "completeness_min" => completeness_min,
@@ -244,11 +275,10 @@ function main()
             "n_clusters" => n_clusters,
             "singletons" => singletons,
             "doubletons" => doubletons,
-            "chao1" => chao1,            
+            "chao1" => chao1,
         ),
         "sankey_stages" => collect(enumerate(filter_steps))
     )
-
     open(output_json, "w") do io
         JSON3.pretty(io, filtered_hq_accessions, JSON3.AlignmentContext(alignment=:Left, indent=2))
     end
@@ -266,8 +296,6 @@ function main()
         :gtdb_taxonomy,
         :ncbi_assembly_level,
     ]
-
-    
     train_accs = pick_one_per_cluster(joined_df)
     validation_accs = pick_one_per_cluster(joined_df; skip=train_accs)
     
@@ -275,11 +303,9 @@ function main()
     validation_df = filter(row -> row.accession in validation_accs, joined_df)
     
     CSV.write(output_all_accessions, joined_df[!, selected_cols]; delim='\t')
-    @info "Training acccessions saved to $train_filename"
     CSV.write(train_filename, train_df[!, selected_cols]; delim='\t')
-    @info "Validation acccessions saved to $validation_filename"
     CSV.write(validation_filename, validation_df[!, selected_cols]; delim='\t')
-    @info "All filtered accession saved to $output_all_accessions"
+    @info "Results saved to $output_all_accessions, $train_filename, $validation_filename"
 end
 
 if abspath(PROGRAM_FILE) == @__FILE__
