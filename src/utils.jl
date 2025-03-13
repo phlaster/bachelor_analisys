@@ -1,7 +1,6 @@
 using GFF3
 using DataFrames
 using PrettyTables
-using PlotlyJS
 
 function clear_last_lines(n::Int)
     for _ in 1:n

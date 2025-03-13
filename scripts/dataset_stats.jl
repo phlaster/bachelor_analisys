@@ -2,19 +2,19 @@
 
 const PROJECT_DIR = dirname(@__DIR__)
 const UTILS_FILE = joinpath(PROJECT_DIR, "src", "utils.jl")
+const PLOTS_FILE = joinpath(PROJECT_DIR, "src", "plots.jl")
 
 using Pkg
 Pkg.activate(PROJECT_DIR, io=devnull)
 include(UTILS_FILE)
+include(PLOTS_FILE)
 
 using ArgParse
 using DataFrames
-using PlotlyJS
 using ProgressMeter
 using JSON3
 using CSV
 using StatsBase
-
 
 function parse_commandline()
     s = ArgParseSettings(prog="Dataset Statistics",
@@ -26,11 +26,25 @@ function parse_commandline()
         "--genomes-dir", "-d"
             help = "Directory with individual genomes extracted from NCBI archives"
             required = true
-        "--append", "-a"
-            help = "Append new columns to metadata table"
-            action = :store_true
+        "--input-train", "-t"
+            help = "Optional file with list of accessions for training data"
+        "--out-directory", "-o"
+            help = "Optional Directory name to save the results"
     end
     return parse_args(s)
+end
+
+function check_files_exist(genomes_dir::AbstractString, accession::AbstractString)
+    acc_dir = joinpath(genomes_dir, accession)
+    fna_file = joinpath(acc_dir, "$accession.fna")
+    gff_file = joinpath(acc_dir, "$accession.gff")
+    json_file = joinpath(acc_dir, "$accession.json")
+    return all(isfile, [fna_file, gff_file, json_file])
+end
+
+function get_gene_count(json_file::String)
+    json_data = JSON3.read(json_file)
+    return json_data.annotationInfo.stats.geneCounts.proteinCoding
 end
 
 function count_genes(gff_file::String)
@@ -51,10 +65,50 @@ function get_genome_length(fasta_file::String)
     return total_length
 end
 
+function process_accessions!(df::DataFrame, genomes_dir::String)
+    initial_size = nrow(df)
+    changed = false
+
+    filter!(row -> check_files_exist(genomes_dir, row.accession), df)
+    if initial_size < nrow(df)
+        changed = true
+    end
+    
+    if isempty(df)
+        @error "No valid accessions found in $genomes_dir"
+        exit(1)
+    end
+
+    if !("phylum" in names(df))
+        transform!(df, :gtdb_taxonomy => (x -> [split(t, ';')[2][4:end] for t in x]) => :phylum)
+        changed = true
+    else
+        @info "Skip: `phylum` column exists"
+    end
+
+    if !("gene_count" in names(df))
+        gene_count = Int[]
+        @showprogress desc="Collecting gene count from json metadata" for acc in df.accession
+            json_file = joinpath(genomes_dir, acc, "$acc.json")
+            push!(gene_count, get_gene_count(json_file))
+        end
+        clear_last_lines(1)
+        df.gene_count = gene_count
+        changed = true
+    else
+        @info "Skip: `gene_count` column exists"
+    end
+
+    return changed
+end
+
 function main()
     args = parse_commandline()
     input_file = abspath(args["input-file"])
     genomes_dir = abspath(args["genomes-dir"])
+    train_file = isnothing(args["input-train"]) ? nothing : abspath(args["input-train"])
+    out_dir = isnothing(args["out-directory"]) ? nothing : abspath(mkpath(args["out-directory"]))
+
 
     if !isfile(input_file)
         @error "Input file '$input_file' does not exist"
@@ -64,93 +118,34 @@ function main()
         @error "Directory '$genomes_dir' does not exist"
         exit(1)
     end
-
-    df = CSV.read(input_file, DataFrame)
-    transform!(df, :gtdb_taxonomy => (x -> [split(t, ';')[2][4:end] for t in x]) => :philum)
-    gene_count = Union{Int, Missing}[]
-
-    for (i, acc) in enumerate(df.accession)
-        data_dir = joinpath(genomes_dir, acc, "ncbi_dataset", "data")
-        acc_dir = joinpath(data_dir, acc)
-        
-        if !isdir(acc_dir)
-            @error "No $acc_dir found"
-            push!(gene_count, missing)
-            continue
-        end
-
-        fna_files = filter(f -> endswith(f, "_genomic.fna"), readdir(acc_dir))
-        if length(fna_files) != 1
-            @warn "Expected one _genomic.fna file in $acc_dir, found $(length(fna_files))"
-            push!(gene_count, missing)
-            continue
-        end
-
-        gff_file = joinpath(acc_dir, "genomic.gff")
-        if !isfile(gff_file)
-            @warn "GFF file missing for $acc"
-            push!(gene_count, missing)
-            continue
-        end
-
-        jsonl_file = joinpath(data_dir, "assembly_data_report.jsonl")
-        if !isfile(jsonl_file)
-            @warn "Assembly report missing for $acc"
-            push!(gene_count, missing)
-            continue
-        end
-        
-        n_genes = JSON3.read(jsonl_file).annotationInfo.stats.geneCounts.proteinCoding
-        push!(gene_count, n_genes)
+    if !isnothing(train_file) && !isfile(train_file)
+        @error "Training input file '$train_file' does not exist"
+        exit(1)
     end
 
-    df.gene_count = gene_count
-    
-    cm_philum = countmap(df.philum)
-    n_genomes = nrow(df)
-    
-    hist = plot(histogram(x=df.gene_count, name="Gene Count"),
-        Layout(title="Histogram of Gene Counts: $n_genomes",
-        xaxis_title="Number of Genes",
-        yaxis_title="Frequency")
-    )
-    PlotlyJS.savefig(hist, "gene_count_histogram.html")
-    
-    traces = [
-        begin
-            sub_df = df[df.philum .== p, :]
-            scatter(
-                x = sub_df.genome_size,
-                y = sub_df.gene_count,
-                mode = "markers",
-                name = "$(cm_philum[p])($(round(100cm_philum[p]/n_genomes, digits=2))): $p",
-                marker = attr(
-                    opacity = 0.6
-                )
-            )
-        end for p in getindex.(sort(collect(cm_philum), by=x->x.second, rev=true), 1)
-    ]
+    main_df = CSV.read(input_file, DataFrame)
+    changed = process_accessions!(main_df, genomes_dir)
 
-    layout = Layout(
-    title = "Genome Length vs Gene Count: $n_genomes",
-    xaxis = attr(
-        title = "Genome Length (bp)",
-        range = [-1e6, 13e6]
-    ),
-    yaxis = attr(
-        title = "Number of Genes",
-        range = [0, 12e3]
-    ),
-    legend = attr(
-        x = 0,
-        y = 1
-    )
-)
-
-    scatter_plot = Plot(traces, layout)
-    PlotlyJS.savefig(scatter_plot, "genome_length_vs_gene_count.html")
-
-    @info "Plots saved to gene_count_histogram.html and genome_length_vs_gene_count.html"
+    if changed
+        CSV.write(input_file, main_df; delim='\t')
+        @info "Overwritten: $input_file"
+    else
+        @info "No changes to existing $input_file"
+    end
+    
+    train_df = if !isnothing(train_file)
+        train_df = CSV.read(train_file, DataFrame)
+        train_changed = process_accessions!(train_df, genomes_dir)
+        if train_changed
+            CSV.write(train_file, train_df; delim='\t')
+            @info "Overwritten: $train_file"
+        else
+            @info "No changes to existing $train_file"
+        end
+        train_df
+    end
+    plotfile = isnothing(out_dir) ? nothing : joinpath(out_dir, "stats.html")
+    summaryplots(main_df; train_df=train_df, savename=plotfile)
 end
 
 if abspath(PROGRAM_FILE) == @__FILE__
