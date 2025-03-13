@@ -58,7 +58,7 @@ function download_accession(accession::AbstractString, output_dir::AbstractStrin
         attempts += 1
         rm(archive_part, force=true)
 
-        @info "Attempt $attempts of $max_retries for accession $accession"
+        # @info "Attempt $attempts of $max_retries for accession $accession"
         start_time = now()
         try
             cmd = pipeline(`datasets download genome accession $accession --include genome,gff3 --filename $archive_part`, devnull)
@@ -76,7 +76,7 @@ function download_accession(accession::AbstractString, output_dir::AbstractStrin
 
             mv(archive_part, archive_path, force=true)
             success = true
-            @info "Accession $accession: Downloaded successfully in $(duration)s"
+            # @info "Accession $accession: Downloaded successfully in $(duration)s"
         catch e
             @warn "Accession $accession: Attempt $attempts failed: $e"
             if attempts == max_retries
@@ -108,15 +108,12 @@ function extract_archives(output_dir::String; force=false)
             exit()
         end
         
-        # Step 1: Extract the archive into a temporary directory
         temp_dir = mktempdir()
         try
             run(pipeline(`unzip -o $zip -d $temp_dir`, devnull))
             
-            # Step 2: Locate and move the required files
             data_dir = joinpath(temp_dir, "ncbi_dataset", "data", accession)
             if isdir(data_dir)
-                # Find and move the FASTA file
                 fna_files = filter(f -> endswith(f, "_genomic.fna"), readdir(data_dir))
                 if length(fna_files) == 1
                     original_fna = joinpath(data_dir, fna_files[1])
@@ -125,7 +122,6 @@ function extract_archives(output_dir::String; force=false)
                     @warn "Expected one _genomic.fna file in $data_dir, found $(length(fna_files))"
                 end
                 
-                # Move and rename the GFF file
                 original_gff = joinpath(data_dir, "genomic.gff")
                 if isfile(original_gff)
                     mv(original_gff, target_gff, force=true)
@@ -136,7 +132,6 @@ function extract_archives(output_dir::String; force=false)
                 @warn "Data directory not found for $accession"
             end
             
-            # Move and rename the JSON assembly report
             json_file = joinpath(temp_dir, "ncbi_dataset", "data", "assembly_data_report.jsonl")
             if isfile(json_file)
                 mv(json_file, target_json, force=true)
@@ -144,7 +139,6 @@ function extract_archives(output_dir::String; force=false)
                 @warn "Assembly report JSON missing for $accession"
             end
             
-            # Step 3: Clean up temporary directory
             rm(temp_dir, recursive=true)
         catch e
             @error "Failed to process $zip for $accession: $e (Thread $(threadid()))"
@@ -155,7 +149,6 @@ function extract_archives(output_dir::String; force=false)
     @info "Extraction and reorganization completed"
 end
 
-# Main function
 function main()
     global_logger(ConsoleLogger(stdout, Logging.Info))
     args = parse_commandline()
@@ -178,7 +171,6 @@ function main()
         exit(1)
     end
 
-    # Filter accessions to download only those that are missing
     archive_dir = joinpath(output_dir, "archives")
     accessions_to_download = [acc for acc in accessions if !isfile(joinpath(archive_dir, "$acc.zip"))]
     skipped = length(accessions) - length(accessions_to_download)
@@ -187,12 +179,11 @@ function main()
     end
     @info "Processing $(length(accessions_to_download)) accessions with $parallel parallel downloads"
 
-    min_duration = Ref{Float64}(-1) # Tracks fastest download time
-
+    min_duration = Ref{Float64}(-1)
     active_tasks = Task[]
     failed_accessions = String[]
 
-    @showprogress for accession in accessions_to_download
+    @showprogress desc="Downloading accessions" for accession in accessions_to_download
         while length(active_tasks) >= parallel
             finished_task = wait_tasks(active_tasks)
             filter!(t -> t !== finished_task, active_tasks)
@@ -206,6 +197,7 @@ function main()
         end
         push!(active_tasks, task)
     end
+    clear_last_lines(1)
 
     for task in active_tasks
         wait(task)
