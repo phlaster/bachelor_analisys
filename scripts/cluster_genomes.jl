@@ -113,7 +113,16 @@ end
 function pick_one_per_cluster(df::DataFrame; skip=String[])
     df_filtered = filter(row -> !(row.accession in skip), df)
     groups = groupby(df_filtered, :cluster)
-    picks = [first(g.accession) for g in groups]
+    
+    picks = String[]
+    for g in groups
+        if first(g.cluster) == -1
+            append!(picks, g.accession)
+        else
+            push!(picks, first(g.accession))
+        end
+    end
+    
     return picks
 end
 
@@ -186,7 +195,7 @@ function main()
         filter(r->r.ncbi_assembly_level in ["Complete Genome", "Chromosome"], _)
         @aside push!(filter_steps, nrow(_)=>"Genome+Chromosome")
         
-        filter(r->r.ncbi_rrna_count != "none", _)
+        filter(r->!(r.ncbi_rrna_count in ["none", "0"]), _)
         @aside push!(filter_steps, nrow(_)=>">0 rRNA")
         
         filter(r->min(r.checkm2_completeness, r.checkm_completeness) ≥ completeness_min, _)
