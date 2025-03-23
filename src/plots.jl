@@ -93,8 +93,7 @@ function create_sankey(steps::Vector{Pair{Int64, String}}; savefile=nothong)
     return plt
 end
 
-function summaryplots(main_df; train_df, savename)
-    # Calculate axis limits with 10% padding for scatter plots
+function summaryplots(main_df; train_df=nothing, savename=nothing)
     genome_min, genome_max = extrema(main_df.genome_size)
     gene_min, gene_max = extrema(main_df.gene_count)
     genome_padding = 0.1 * (genome_max - genome_min)
@@ -103,7 +102,6 @@ function summaryplots(main_df; train_df, savename)
     xlims = (genome_min - genome_padding, genome_max + genome_padding)
     ylims = (gene_min - gene_padding, gene_max + gene_padding)
 
-    # Existing phylum processing and color mapping code remains the same
     phylum_counts = combine(groupby(main_df, :phylum), nrow => :count)
     sort!(phylum_counts, :count, rev=true)
     total = sum(phylum_counts.count)
@@ -123,22 +121,21 @@ function summaryplots(main_df; train_df, savename)
         for (i, phylum) in enumerate(major_phylums)
     )
 
-    # Existing create_traces function remains the same
-    function create_traces(df, name_prefix)
+    function create_traces(df)
         traces = []
         for phylum in major_phylums
             sub_df = filter(row -> row.phylum == phylum, df)
             p_count = nrow(sub_df)
-            p_percent = round(100nrow(sub_df)/nrow(df), digits=2)
+            p_percent = round(100 * nrow(sub_df) / nrow(df), digits=2)
             color = color_map[phylum]
             tr = scatter(x=sub_df.genome_size, y=sub_df.gene_count,
-                mode="markers", name="$p_count($p_percent%) $phylum",
+                mode="markers", name="$p_count ($p_percent%) $phylum",
                 marker=attr(
                     color="rgb($(color.r), $(color.g), $(color.b))",
-                    opacity = 0.5,
+                    opacity=0.5
                 ),
                 legendgroup=phylum,
-                showlegend=true,
+                showlegend=true
             )
             push!(traces, tr)
         end
@@ -146,26 +143,52 @@ function summaryplots(main_df; train_df, savename)
         other_df = filter(row -> !(row.phylum in major_phylums), df)
         if nrow(other_df) > 0
             otr_count = nrow(other_df)
-            otr_percent = round(100nrow(other_df)/nrow(df), digits=2)
-            tr = scatter(x=other_df.genome_size, y=other_df.gene_count,
-                mode="markers", name="$otr_count($otr_percent%) Other",
+            otr_percent = round(100 * nrow(other_df) / nrow(df), digits=2)
+            otr_trace = scatter(x=other_df.genome_size, y=other_df.gene_count,
+                mode="markers", name="$otr_count ($otr_percent%) Other",
                 marker=attr(
                     color="#CCCCCC",
-                    opacity = 0.45,
+                    opacity=0.45
                 ),
                 legendgroup="Other",
                 showlegend=true
             )
-            push!(traces, tr)
+            push!(traces, otr_trace)
         end
         return traces
     end
 
-    # Existing trace creation remains the same
-    main_traces = create_traces(main_df, "Main")
-    train_traces = isnothing(train_df) ? 
+    main_traces = create_traces(main_df)
+    train_traces = isnothing(train_df) ?
         [scatter(x=[NaN], y=[NaN], mode="markers", name="No Training Data")] :
-        create_traces(train_df, "Train")
+        create_traces(train_df)
+    
+    gc_hist_traces = []
+    for phylum in major_phylums
+        sub_df = filter(row -> row.phylum == phylum, main_df)
+        countval = nrow(sub_df)
+        hist_trace = histogram(x=sub_df.gc_percentage,
+            name="$countval $phylum",
+            marker=attr(
+                color="rgb($(color_map[phylum].r), $(color_map[phylum].g), $(color_map[phylum].b))"
+            ),
+            opacity=0.7,
+            legendgroup=phylum,
+            showlegend=true
+        )
+        push!(gc_hist_traces, hist_trace)
+    end
+    other_gc = filter(row -> !(row.phylum in major_phylums), main_df)
+    if nrow(other_gc) > 0
+        hist_trace_other = histogram(x=other_gc.gc_percentage,
+            name="$(nrow(other_gc)) Other",
+            marker=attr(color="#CCCCCC"),
+            opacity=0.7,
+            legendgroup="Other",
+            showlegend=true
+        )
+        push!(gc_hist_traces, hist_trace_other)
+    end
 
     fig = make_subplots(
         rows=2, cols=2,
@@ -175,9 +198,10 @@ function summaryplots(main_df; train_df, savename)
         ]
     )
 
-    # Add traces with axis labels
     add_trace!(fig, histogram(x=main_df.gene_count, showlegend=false), row=1, col=1)
-    add_trace!(fig, histogram(x=main_df.gc_percentage, showlegend=false), row=1, col=2)
+    for tr in gc_hist_traces
+        add_trace!(fig, tr, row=1, col=2)
+    end
 
     for trace in main_traces
         add_trace!(fig, trace, row=2, col=1)
@@ -202,7 +226,8 @@ function summaryplots(main_df; train_df, savename)
         xaxis3_range=xlims,
         yaxis3_range=ylims,
         xaxis4_range=xlims,
-        yaxis4_range=ylims
+        yaxis4_range=ylims,
+        barmode="stack"  # set the barmode to stack so GC histogram is cumulative
     )
 
     if !isnothing(savename)
