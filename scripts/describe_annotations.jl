@@ -73,7 +73,7 @@ function extract_grouped_ranges(filename::String)
     grouped = Dict{Tuple{String, String}, Vector{UnitRange{Int}}}()
     for chrom in chromosomes
         for strand in strands
-            filtered = filter_gff_region(chrom; regiontype="CDS", strand=strand, phase=0)(records)
+            filtered = filter_gff_region(sequence_header=chrom, regiontype="CDS", strand=strand, phase=0)(records)
             ranges = [GFF3.seqstart(r):GFF3.seqend(r) for r in filtered]
             grouped[(chrom, strand)] = ranges
         end

@@ -46,7 +46,7 @@ chrom_1 = chroms[1]
 confmatrix(ref) = x -> ConfusionMTR(ref, x);
 
 # ╔═╡ dbc1f3bb-8933-439b-b7ff-de72dd46c578
-pipeline = ranges_from_GFF_records ∘ filter_gff_region(chrom_1; regiontype="CDS", strand="+", phase=0) ∘ open_gff;
+pipeline = ranges_from_GFF_records ∘ filter_gff_region(; sequence_header=chrom_1, regiontype="CDS", strand="+", phase=0) ∘ open_gff;
 
 # ╔═╡ 484011a1-b4e0-4cf8-a0e6-56df96fd96d7
 reference_ranges = pipeline(reference_file);

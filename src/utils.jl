@@ -214,21 +214,21 @@ ranges_from_GFF_records(list::Vector{GFF3.Record}) = [
 ]
 
 """
-    filter_gff_region(sequence_header; regiontype, strand, phase)
+    filter_gff_region(; sequence_header, regiontype, strand, phase)
 
 Create a filter function for GFF3 records based on multiple criteria:
-- `sequence_header`: Chromosome/contig name to match
-- `regiontype`: Required feature type (e.g., "gene", "exon")
-- `strand`: Strand direction ("+" or "-"), optional filter
+- `sequence_header`: Chromosome/contig name to match, if empty choses all
+- `regiontype`: Required feature type (e.g., "gene", "exon"), 
+- `strand`: Strand direction ("+" or "-"), if empty choses all
 - `phase`: Translation phase (0-2), use -1 to disable phase filtering
 The returned function filters vectors of GFF3.Record objects.
 """
-filter_gff_region(sequence_header::String; regiontype::String, strand::String="+", phase::Int=-1) = list::Vector{GFF3.Record} -> filter(
+filter_gff_region(; sequence_header::String="", regiontype::String="", strand::String="", phase::Int=-1) = list::Vector{GFF3.Record} -> filter(
     x -> all([
-        GFF3.featuretype(x) == regiontype,
-        GFF3.seqid(x) == sequence_header,
-        phase == -1 || GFF3.hasphase(x) && GFF3.phase(x) == phase,
-        string(GFF3.strand(x)) == strand
+        isempty(regiontype)      || GFF3.featuretype(x) == regiontype,
+        isempty(sequence_header) || GFF3.seqid(x) == sequence_header,
+        phase == -1              || GFF3.hasphase(x) && GFF3.phase(x) == phase,
+        isempty(strand)          || string(GFF3.strand(x)) == strand
     ]), list
 )
 
@@ -250,8 +250,8 @@ function feature_strand_table(gff_entries::Vector{GFF3.Record}, chrom::String)::
     )
     
     for ft in features
-        pos_count = gff_entries |> filter_gff_region(chrom; strand="+", regiontype=ft) |> length
-        neg_count = gff_entries |> filter_gff_region(chrom; strand="-", regiontype=ft) |> length
+        pos_count = gff_entries |> filter_gff_region(; sequence_header=chrom, strand="+", regiontype=ft) |> length
+        neg_count = gff_entries |> filter_gff_region(; sequence_header=chrom, strand="-", regiontype=ft) |> length
         push!(df, (ft, pos_count, neg_count))
     end
     sort!(df, [:Positive_Strand, :Negative_Strand], rev=true)
@@ -265,7 +265,7 @@ Randomly select a genomic locus from features of specified type and strand. Usef
 sampling representative regions from annotation data.
 """
 function rand_locus(gff_entries::Vector{GFF3.Record}, chrom::String, feature::String; strand::String="+")::String
-    region = gff_entries |> filter_gff_region(chrom; strand=strand, regiontype=feature) |> x->rand(x)
+    region = gff_entries |> filter_gff_region(; sequence_header=chrom, strand=strand, regiontype=feature) |> x->rand(x)
     return locus(region)
 end
 
@@ -280,8 +280,8 @@ function extract_regions(gff_entries::Vector{GFF3.Record}, chrom::String, regtyp
     features = gff_entries .|> GFF3.featuretype |> Set
     regtype ∉ features && return UnitRange{Int}[]
 
-    gff_pos = gff_entries |> filter_gff_region(chrom; strand="+", regiontype=regtype) |> ranges_from_GFF_records# |> merge_ranges
-    gff_neg = gff_entries |> filter_gff_region(chrom; strand="-", regiontype=regtype) |> ranges_from_GFF_records# |> merge_ranges
+    gff_pos = gff_entries |> filter_gff_region(; sequence_header=chrom, strand="+", regiontype=regtype) |> ranges_from_GFF_records# |> merge_ranges
+    gff_neg = gff_entries |> filter_gff_region(; sequence_header=chrom, strand="-", regiontype=regtype) |> ranges_from_GFF_records# |> merge_ranges
 
     return gff_pos, gff_neg
 end
