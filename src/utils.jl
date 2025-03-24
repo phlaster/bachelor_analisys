@@ -185,7 +185,7 @@ end
 
 Read and parse a GFF3 file, returning all records as a vector.
 """
-open_gff(name::String) = open(GFF3.Reader, name) do gff collect(gff) end
+open_gff(name::T) where T <: AbstractString = open(GFF3.Reader, name) do gff collect(gff) end
 
 """
     locus(record)
@@ -201,17 +201,44 @@ locus(record::GFF3.Record) = "$(GFF3.seqid(record)):$(GFF3.seqstart(record))..$(
 Create a locus string generator for a specific chromosome/sequence identifier. The returned 
 function accepts a UnitRange{Int} to produce locus strings (e.g., locus("chr2")(1000:2000) → "chr2:1000..2000").
 """
-locus(seqid::String) = interval::UnitRange{Int64} -> "$seqid:$(interval.start)..$(interval.stop)"
+locus(seqid::T) where T <: AbstractString = interval::UnitRange{Int64} -> "$seqid:$(interval.start)..$(interval.stop)"
 
 """
-    ranges_from_GFF_records(list)
+    ranges_from_GFF_records(list[, side={:left|:right})
 
-Extract genomic position ranges from GFF3 records. Returns a vector of UnitRanges representing 
-the start and end positions of each feature in the input records.
+Extract genomic position ranges (or borders of a chosen side) from GFF3 records.
+
+```
+julia> ranges_from_GFF_records(some_gff_list)
+2-element Vector{UnitRange{Int64}}:
+ 1:15
+ 22:30
+
+julia> ranges_from_GFF_records(some_gff_list, :left)
+2-element Vector{Int64}:
+  1
+ 22
+
+julia> ranges_from_GFF_records(some_gff_list, :right)
+2-element Vector{Int64}:
+ 15
+ 30
+````
 """
 ranges_from_GFF_records(list::Vector{GFF3.Record}) = [
     GFF3.seqstart(x):GFF3.seqend(x) for x in list
 ]
+
+function ranges_from_GFF_records(list::Vector{GFF3.Record}, side::Symbol)
+    if side == :left
+        return [GFF3.seqstart(x) for x in list]
+    elseif side == :right
+        return [GFF3.seqend(x) for x in list]
+    else
+        return Int[]
+    end
+end
+
 
 """
     filter_gff_region(; sequence_header, regiontype, strand, phase)
@@ -223,7 +250,12 @@ Create a filter function for GFF3 records based on multiple criteria:
 - `phase`: Translation phase (0-2), use -1 to disable phase filtering
 The returned function filters vectors of GFF3.Record objects.
 """
-filter_gff_region(; sequence_header::String="", regiontype::String="", strand::String="", phase::Int=-1) = list::Vector{GFF3.Record} -> filter(
+filter_gff_region(;
+    sequence_header::T="",
+    regiontype::T="",
+    strand::T="",
+    phase::Int=-1
+) where T <: AbstractString = list::Vector{GFF3.Record} -> filter(
     x -> all([
         isempty(regiontype)      || GFF3.featuretype(x) == regiontype,
         isempty(sequence_header) || GFF3.seqid(x) == sequence_header,
@@ -240,7 +272,7 @@ Generate a summary table showing strand distribution of genomic features. Return
 with columns: Feature type, Positive Strand count, and Negative Strand count for features 
 on the specified chromosome.
 """
-function feature_strand_table(gff_entries::Vector{GFF3.Record}, chrom::String)::DataFrame
+function feature_strand_table(gff_entries::Vector{GFF3.Record}, chrom::T) where T <: AbstractString
     features = gff_entries .|> GFF3.featuretype |> Set
 
     df = DataFrame(
@@ -264,7 +296,7 @@ end
 Randomly select a genomic locus from features of specified type and strand. Useful for 
 sampling representative regions from annotation data.
 """
-function rand_locus(gff_entries::Vector{GFF3.Record}, chrom::String, feature::String; strand::String="+")::String
+function rand_locus(gff_entries::Vector{GFF3.Record}, chrom::T, feature::T; strand::T="+")::String where T <: AbstractString
     region = gff_entries |> filter_gff_region(; sequence_header=chrom, strand=strand, regiontype=feature) |> x->rand(x)
     return locus(region)
 end
@@ -276,7 +308,7 @@ Separate genomic features into positive and negative strand ranges. Returns a tu
 containing two vectors of UnitRanges: (positive_strand_ranges, negative_strand_ranges) 
 for the specified feature type on the given chromosome.
 """
-function extract_regions(gff_entries::Vector{GFF3.Record}, chrom::String, regtype="gene")
+function extract_regions(gff_entries::Vector{GFF3.Record}, chrom::T, regtype="gene") where T <: AbstractString
     features = gff_entries .|> GFF3.featuretype |> Set
     regtype ∉ features && return UnitRange{Int}[]
 
