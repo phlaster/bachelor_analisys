@@ -84,12 +84,41 @@ function weighted_loss(y_pred, y, weight_pos=10.0)
     mean(bce .* weights)                       # Средняя взвешенная потеря
 end
 
-# Обучение модели
-function train_model!(model, state, dataloader, epochs=10, weight_pos=weight_pos)
+# Функция для вычисления метрик на тестовых данных
+function evaluate_model(model, test_dataloader)
+    total_tp = 0
+    total_fp = 0
+    total_fn = 0
+    threshold = 0.5  # Порог для бинаризации предсказаний
+
+    for (X, y) in test_dataloader
+        X_gpu = X |> gpu
+        y_gpu = y |> gpu
+        y_pred = model(X_gpu) .> threshold  # Бинарные предсказания
+        y_true = y_gpu .== 1
+
+        tp = sum(y_pred .& y_true)  # True positives
+        fp = sum(y_pred .& .!y_true)  # False positives
+        fn = sum(.!y_pred .& y_true)  # False negatives
+
+        total_tp += tp
+        total_fp += fp
+        total_fn += fn
+    end
+
+    precision = total_tp / (total_tp + total_fp + eps(Float32))  # Добавляем eps для избежания деления на 0
+    recall = total_tp / (total_tp + total_fn + eps(Float32))
+    f1 = 2 * precision * recall / (precision + recall + eps(Float32))
+
+    return precision, recall, f1
+end
+
+# Обучение модели с оценкой на тестовых данных
+function train_model!(model, state, train_dataloader, test_dataloader, epochs=10, weight_pos=10.0)
     for epoch in 1:epochs
         total_loss = 0.0
         num_batches = 0
-        @showprogress desc="Progress for epoch $epoch" for (X, y) in dataloader
+        @showprogress desc="Progress for epoch $epoch" for (X, y) in train_dataloader
             X_gpu = X |> gpu
             y_gpu = y |> gpu
             gs = gradient(model -> weighted_loss(model(X_gpu), y_gpu, weight_pos), model)
@@ -99,6 +128,10 @@ function train_model!(model, state, dataloader, epochs=10, weight_pos=weight_pos
         end
         avg_loss = total_loss / num_batches
         println("Эпоха $epoch, средний loss: $avg_loss")
+
+        # Оценка на тестовых данных
+        precision, recall, f1 = evaluate_model(model, test_dataloader)
+        println("Тестовые метрики: Precision=$precision, Recall=$recall, F1=$f1")
     end
 end
 
@@ -115,33 +148,46 @@ function main()
     pos_count = 0
     neg_count = 0
 
-    # Создаем загрузчики для всех хромосом и стрендов
-    all_loaders = ChromosomeDataLoader[]
-    @showprogress desc="Loading genomes" for dir in train_directories
+    # Создаем загрузчики для тренировочных данных
+    train_loaders = ChromosomeDataLoader[]
+    @showprogress desc="Loading train genomes" for dir in train_directories
         d = digitize_genome_one_side(dir)
-        # Объединяем данные по хромосомам для обоих стрендов
         all_dna = vcat(d.dna_pos, d.dna_neg)
         all_borders = vcat(d.borders_pos, d.borders_neg)
         for (dna, borders) in zip(all_dna, all_borders)
             loader = ChromosomeDataLoader(dna, borders, window_size, step)
-            push!(all_loaders, loader)
+            push!(train_loaders, loader)
         end
         pos_count += sum(sum.(all_borders))  # Число положительных примеров
         neg_count += sum(length.(all_borders)) - pos_count  # Число отрицательных примеров
     end
     weight_pos = neg_count / pos_count  # Вес для положительного класса
 
-    # Собираем все окна из всех хромосом/стрендов
-    all_data = create_all_windows(all_loaders)
-    dataloader = Flux.DataLoader(all_data, batchsize=batch_size, shuffle=true, collate=collate)
+    # Собираем все окна из тренировочных данных
+    train_data = create_all_windows(train_loaders)
+    train_dataloader = Flux.DataLoader(train_data, batchsize=batch_size, shuffle=true, collate=collate)
+
+    # Создаем загрузчики для тестовых данных
+    test_loaders = ChromosomeDataLoader[]
+    @showprogress desc="Loading test genomes" for dir in test_directories
+        d = digitize_genome_one_side(dir)
+        all_dna = vcat(d.dna_pos, d.dna_neg)
+        all_borders = vcat(d.borders_pos, d.borders_neg)
+        for (dna, borders) in zip(all_dna, all_borders)
+            loader = ChromosomeDataLoader(dna, borders, window_size, step)
+            push!(test_loaders, loader)
+        end
+    end
+    test_data = create_all_windows(test_loaders)
+    test_dataloader = Flux.DataLoader(test_data, batchsize=batch_size, shuffle=false, collate=collate)
 
     # Создаем одну модель
     model = create_model()
     opt = ADAM(0.001)
     state = Flux.setup(opt, model)
 
-    # Обучаем модель
-    train_model!(model, state, dataloader, epochs, weight_pos)
+    # Обучаем модель с оценкой на тестовых данных
+    train_model!(model, state, train_dataloader, test_dataloader, epochs, weight_pos)
 end
 
 if abspath(PROGRAM_FILE) == @__FILE__
