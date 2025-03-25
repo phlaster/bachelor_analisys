@@ -1,5 +1,6 @@
 using PlotlyJS
 using ColorSchemes
+using DataFrames
 
 function create_sankey(steps::Vector{Pair{Int64, String}}; savefile=nothong)
     n = length(steps)
@@ -103,7 +104,7 @@ function summaryplots(main_df; train_df=nothing, savename=nothing)
     ylims = (gene_min - gene_padding, gene_max + gene_padding)
 
     phylum_counts = combine(groupby(main_df, :phylum), nrow => :count)
-    sort!(phylum_counts, :count, rev=true)
+    DataFrames.sort!(phylum_counts, :count, rev=true)
     total = sum(phylum_counts.count)
     cumsum_counts = cumsum(phylum_counts.count)
     threshold = 0.9 * total
@@ -210,7 +211,6 @@ function summaryplots(main_df; train_df=nothing, savename=nothing)
         add_trace!(fig, trace, row=2, col=2)
     end
 
-    # Set axis labels and limits
     relayout!(fig, 
         title_text="Dataset and train subset statistics",
         legend=attr(x=1.05, y=0.5),
@@ -227,7 +227,7 @@ function summaryplots(main_df; train_df=nothing, savename=nothing)
         yaxis3_range=ylims,
         xaxis4_range=xlims,
         yaxis4_range=ylims,
-        barmode="stack"  # set the barmode to stack so GC histogram is cumulative
+        barmode="stack"
     )
 
     if !isnothing(savename)
