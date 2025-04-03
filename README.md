@@ -37,3 +37,13 @@ head -n 100 > DATA/GTDB/top100_repeated_species.tsv
 ```shell
 $ julia -t 10 scripts/download_genomes.jl -i DATA/cluseter/cg_hq.tsv -o DATA/genomes/ -e -p 10
 ```
+
+Calculating chromosomes:
+```
+find DATA/genomes/genomes -mindepth 1 -maxdepth 1 -type d | xargs -I{} -P 10 bash -c '
+    dir="{}"                     
+    file="$dir/$(basename "$dir").fna"
+    count=$(grep -c ">" "$file")
+    touch "$dir/n_chroms=$count"
+'
+```
