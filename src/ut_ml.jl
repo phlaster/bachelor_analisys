@@ -1,214 +1,199 @@
 using FastaIO
+using Flux: onehotbatch, OneHotArrays
 
-function onehot_encode_dna(seq::AbstractString; revcomp::Bool=false)
-    N = length(seq)
-    encoding = zeros(Float32, 4, N)
-    N == 0 && return encoding
+function CDS_borders_both_strands(gff_data, chrom_names, chrom_lengths, side::Symbol)
+    @assert !isempty(gff_data) "Empty gff data"
+    @assert !isempty(chrom_names) "Empty chromosomes list"
+    @assert side in [:starts, :stops] "wrong side symbol: $side, must be either :starts or :stops"
+    
+    preallocated_chromosomes = [
+        zeros(UInt8, chrom_length)
+        for chrom_length in chrom_lengths
+    ]
+    class_counts = ClassWeights[]
+    for (chrom_name, chromosome) in zip(chrom_names, preallocated_chromosomes)
+        cds_filter_pos = filter_gff_region(;
+            sequence_header=chrom_name,
+            regiontype="CDS",
+            strand="+")
+        cds_filter_neg = filter_gff_region(;
+            sequence_header=chrom_name,
+            regiontype="CDS",
+            strand="-")
 
-    @inbounds if revcomp
-        comp_mapping = Dict('T'=>1, 'G'=>2, 'C'=>3, 'A'=>4)
-        for (i, ch) in enumerate(Iterators.reverse(uppercase(seq)))
-            if haskey(comp_mapping, ch)
-                row = comp_mapping[ch]
-                encoding[row, i] = 1.f0
-            end
+        CDS_regions_pos = cds_filter_pos(gff_data)
+        CDS_regions_neg = cds_filter_neg(gff_data)
+
+        if side == :starts
+            ranges_from_GFF_records!(chromosome, CDS_regions_pos, :left; k=0x01)
+            ranges_from_GFF_records!(chromosome, CDS_regions_neg, :right; k=0x02)
+        else
+            ranges_from_GFF_records!(chromosome, CDS_regions_pos, :right; k=0x01)
+            ranges_from_GFF_records!(chromosome, CDS_regions_neg, :left; k=0x02)
         end
+        push!(class_counts, class_weights(chromosome))
+    end
+    return preallocated_chromosomes, class_counts
+end
+
+function class_weights(v::Vector{UInt8})
+    L = length(v)
+    n1 = count(x -> x == 0x01, v)
+    n2 = count(x -> x == 0x02, v)
+    n3 = count(x -> x == 0x03, v)
+    return Float32[L-n1-n2-n3, n1, n2, n3] ./ L
+end
+
+function process_genome_one_side(genome_dir::T; side::Symbol=:starts, pad::Int=0) where T <: AbstractString
+    @assert side in [:starts, :stops] "wrong side symbol: $side, must be either :starts or :stops"
+    @assert isdir(genome_dir) "No such genomic directory"
+    file_prefix = last(splitpath(genome_dir))
+    fastaname = joinpath(genome_dir, "$file_prefix.fna")
+    gffname = joinpath(genome_dir, "$file_prefix.gff")
+    @assert all(isfile.([fastaname, gffname])) "Genomic files not found"
+
+    
+    fasta_data = readfasta(fastaname)
+    fasta_sequences = getindex.(fasta_data, 2)
+    dna_padded = add_pad.(collect.(uppercase.(fasta_sequences)), pad)
+    dna_onehot_labels = ('A', 'C', 'G', 'T', 'N')
+    dna_encoded =  onehotbatch.(dna_padded, Ref(dna_onehot_labels), 'N')
+
+    
+    chrom_names = getindex.(fasta_data, 1) .|> split .|> first
+    chrom_lengths = length.(fasta_sequences)
+    gff_data = open_gff(gffname)
+    
+    labels_padded, class_counts = CDS_borders_both_strands(gff_data, chrom_names, chrom_lengths, side)
+    labels_onehot_labels = (0,1,2,3)
+    labels_encoded = onehotbatch.(labels_padded, Ref(labels_onehot_labels))
+    
+    return (dna_encoded, labels_encoded, class_counts)
+end
+
+function count_chromosomes(genome_dir::T) where T <: AbstractString
+    @assert isdir(genome_dir) "No such genomic directory"
+    countfilename = only(filter(startswith("n_chroms="), readdir(genome_dir)))
+    n_chroms = parse(Int, countfilename[10:end])
+    return n_chroms
+end
+
+function count_chromosomes(genome_dirs::Vector{T}) where T <: AbstractString
+    tasks = [@async count_chromosomes(dir) for dir in genome_dirs]
+    results = fetch.(tasks)
+    return results
+end
+
+
+function add_pad(v::Vector, pad::Int)
+    pad < 1 && return v
+    L = length(v)
+    pad <= L && return vcat(v[end-pad+1:end], v, v[1:pad])
+
+    leading = [v[mod1(i, L)] for i in L-pad+1:L]
+    trailing = [v[mod1(i, L)] for i in 1:pad]
+    
+    return vcat(leading, v, trailing)
+end
+
+
+const ChromosomeOneHot = OneHotArrays.OneHotMatrix{UInt32, Vector{UInt32}}
+const LabelsOneHot = OneHotArrays.OneHotMatrix{UInt32, Vector{UInt32}}
+
+const ClassWeights = Vector{Float32}
+const GenomePrepared = Tuple{
+    Vector{ChromosomeOneHot}, 
+    Vector{LabelsOneHot},
+    Vector{ClassWeights}
+}
+const IndexedGenome = Tuple{Int, GenomePrepared}
+
+
+struct GenomeDataset
+    genome_dirs::Vector{String}
+    genome_counts::Int
+    chromosome_counts::Vector{Int}
+    pad::Int
+    cds_side::Symbol
+    max_cache_entries::Int
+
+    _cache::Vector{IndexedGenome}
+    _cum_counts::Vector{Int}
+
+    function GenomeDataset(genome_dirs::Vector{T}; cds_side::Symbol=:starts, pad::Int=0, max_cache_entries::Int=10) where T <: AbstractString
+        genome_counts = length(genome_dirs)
+        chromosome_counts = count_chromosomes(genome_dirs)
+        cum_counts = cumsum(chromosome_counts)
+
+        new(
+            string.(genome_dirs),
+            genome_counts,
+            chromosome_counts,
+            pad,
+            cds_side,
+            max_cache_entries,
+            IndexedGenome[],
+            cum_counts
+        )
+    end
+end
+
+function Base.show(io::IO, ds::GenomeDataset)
+    println(io, "GenomeDataset:")
+    println(io, "  Genome Directories: ", first(ds.genome_dirs), ", ...")
+    println(io, "  Genome Count      : ", ds.genome_counts)
+    println(io, "  Total Chromosomes : ", length(ds))
+    println(io, "  Padding           : ", ds.pad)
+    println(io, "  CDS sides         : ", ds.cds_side)
+    println(io, "  Cache Size        : ", length(ds._cache),"/",ds.max_cache_entries)
+end
+
+function _find_in_cache(cache::Vector{IndexedGenome}, idx::Int)
+    for (genome_idx, genome) in cache
+        if genome_idx == idx
+            return genome
+        end
+    end
+    return nothing
+end
+
+function _insert_cache!(ds::GenomeDataset, genome_index::Int, genome::GenomePrepared)
+    length(ds._cache) >= ds.max_cache_entries && popfirst!(ds._cache)
+    push!(ds._cache, (genome_index, genome))
+end
+
+function _get_or_load_cache(ds::GenomeDataset, idx::Int)
+    cached = _find_in_cache(ds._cache, idx)
+    !isnothing(cached) && return cached
+
+    genome = process_genome_one_side(ds.genome_dirs[idx]; side=ds.cds_side, pad=ds.pad)
+    _insert_cache!(ds, idx, genome)
+    return genome
+end
+
+Base.length(ds::GenomeDataset) = last(ds._cum_counts)
+
+function Base.getindex(ds::GenomeDataset, idx::Int)
+    if idx < 1 || idx > length(ds)
+        throw(BoundsError(ds, idx))
+    end
+
+    genome_idx = searchsortedfirst(ds._cum_counts, idx)
+    prev_total = genome_idx == 1 ? 0 : ds._cum_counts[genome_idx - 1]
+    chrom_idx = idx - prev_total
+
+    genome = _get_or_load_cache(ds, genome_idx)
+    return (genome[1][chrom_idx], genome[2][chrom_idx], genome[3][chrom_idx])
+end
+
+function Base.iterate(ds::GenomeDataset, state::Int)
+    if state > length(ds)
+        return nothing
     else
-        mapping = Dict('A'=>1, 'C'=>2, 'G'=>3, 'T'=>4)
-        for (i, ch) in enumerate(uppercase(seq))
-            if haskey(mapping, ch)
-                row = mapping[ch]
-                encoding[row, i] = 1.f0
-            end
-        end
+        return (ds[state], state + 1)
     end
-    return encoding
 end
 
-function onehot_decode_dna(encoding::Matrix{T}; revcomp::Bool=false) where T <: Number
-    if size(encoding, 1) != 4
-        error("Incorrect matrix dimentions: 4 rows expected, получено $(size(encoding, 1)).")
-    end
-
-    N = size(encoding, 2)
-    decoded = Vector{Char}(undef, N)
-
-    mapping = revcomp ? Dict(
-        T[1, 0, 0, 0]=>'T',
-        T[0, 1, 0, 0]=>'G',
-        T[0, 0, 1, 0]=>'C',
-        T[0, 0, 0, 1]=>'A'
-    ) : Dict(
-        T[1, 0, 0, 0]=>'A',
-        T[0, 1, 0, 0]=>'C',
-        T[0, 0, 1, 0]=>'G',
-        T[0, 0, 0, 1]=>'T'
-    )
-
-    @inbounds @simd for j in 1:N
-        col = encoding[:, j]
-        if haskey(mapping, col)
-            decoded[j] = mapping[col]
-        else
-            decoded[j] = 'N'
-        end
-    end
-
-    return join(revcomp ? reverse!(decoded) : decoded)
-end
-
-
-
-function CDS_borders_in_GFF(gff_data, chrom_names, chrom_lengths; strand="+")
-    @assert !isempty(gff_data) "Empty gff data"
-    @assert !isempty(chrom_names) "Empty chromosomes list"
-    @assert strand in ["+", "-"] "wrong strand identifier: $strand"
-    
-    cds_starts = Vector{Float32}[]
-    cds_stops = Vector{Float32}[]
-    for (chrom_name, chrom_length) in zip(chrom_names, chrom_lengths)
-        # region_filter = filter_gff_region(; sequence_header=chrom_name, regiontype="region")
-        # chrom_length = gff_data |> region_filter |> ranges_from_GFF_records |> only |> maximum
-
-        cds_filter = filter_gff_region(;
-            sequence_header=chrom_name,
-            regiontype="CDS",
-            strand=strand
-        )
-        intervals = ranges_from_GFF_records(cds_filter(gff_data))
-        
-
-        chrom_starts = zeros(Float32, chrom_length)
-        chrom_stops = zeros(Float32, chrom_length)
-
-        if isempty(intervals)
-            push!(cds_starts, chrom_starts)
-            push!(cds_stops, chrom_stops)
-            continue
-        end
-
-        starts = replace(
-            getfield.(intervals, :start) .% chrom_length,
-            0 => chrom_length
-        )
-        stops = replace(
-            getfield.(intervals, :stop) .% chrom_length,
-            0 => chrom_length
-        )
-        @assert length(starts) == length(stops) "start-stop count mismatch"
-        chrom_starts[starts] .= 1.f0
-        chrom_stops[stops] .= 1.f0
-        
-        push!(cds_starts, chrom_starts)
-        push!(cds_stops, chrom_stops)
-    end
-    
-    return strand == "+" ?
-        (cds_starts, cds_stops) :
-        (reverse!.(cds_starts), reverse!.(cds_stops))
-end
-
-function CDS_borders_one_side(gff_data, chrom_names, chrom_lengths, side::Symbol; strand="+")
-    @assert !isempty(gff_data) "Empty gff data"
-    @assert !isempty(chrom_names) "Empty chromosomes list"
-    @assert strand in ["+", "-"] "wrong strand identifier: $strand, must be either \"+\" or \"-\""
-    @assert side in [:starts, :stops] "wrong side symbol: $side, must be either :starts or :stops"
-    
-    cds_borders = [zeros(Float32, chrom_length) for chrom_length in chrom_lengths]
-    for (i, chrom_name, chrom_length) in zip(1:999999, chrom_names, chrom_lengths)
-        cds_filter = filter_gff_region(;
-            sequence_header=chrom_name,
-            regiontype="CDS",
-            strand=strand
-        )
-        filtered_regions = cds_filter(gff_data)
-
-        @inbounds if strand=="+"
-            borders = side == :starts ? ranges_from_GFF_records(filtered_regions, :left) :
-                              ranges_from_GFF_records(filtered_regions, :right)
-            isempty(borders) && continue
-            cycle_borders = replace(borders .% chrom_length, 0 => chrom_length)
-            cds_borders[i][cycle_borders] .= 1.f0
-        else
-            borders = side == :starts ? ranges_from_GFF_records(filtered_regions, :right) :
-                              ranges_from_GFF_records(filtered_regions, :left)
-            isempty(borders) && continue
-            cycle_borders = replace(borders .% chrom_length, 0 => chrom_length)
-            cds_borders[i][cycle_borders] .= 1.f0
-            reverse!(cds_borders[i])
-        end
-    end
-    
-    return cds_borders
-end
-
-
-function digitize_genome(genome_dir::T) where T <: AbstractString
-    @assert isdir(genome_dir) "No such genomic directory"
-    file_prefix = last(splitpath(genome_dir))
-    fastaname = joinpath(genome_dir, "$file_prefix.fna")
-    gffname = joinpath(genome_dir, "$file_prefix.gff")
-    @assert all(isfile.([fastaname, gffname])) "Genomic files not found"
-    
-    fasta_data = readfasta(fastaname)
-    fasta_strings = getindex.(fasta_data, 2)
-    chrom_lengths = length.(fasta_strings)
-    
-    dna_matrix_pos = onehot_encode_dna.(fasta_strings; revcomp=false)
-    dna_matrix_neg = onehot_encode_dna.(fasta_strings; revcomp=true)
-    
-    chrom_names = getindex.(fasta_data, 1) .|> split .|> first
-    gff_data = open_gff(gffname)
-    
-    starts_pos, ends_pos = CDS_borders_in_GFF(gff_data, chrom_names, chrom_lengths; strand="+")
-    starts_neg, ends_neg = CDS_borders_in_GFF(gff_data, chrom_names, chrom_lengths; strand="-")
-
-    @assert all(==(length(fasta_strings)), [
-        length(dna_matrix_pos),
-        length(dna_matrix_neg),
-        length(starts_pos),
-        length(ends_pos),
-        length(starts_neg),
-        length(ends_neg)
-    ]) "Dimentions do not match"
-    
-    res = (
-        dna_pos=dna_matrix_pos,
-        dna_neg=dna_matrix_neg,
-        starts_pos=starts_pos,
-        stops_pos=ends_pos,
-        starts_neg=starts_neg,
-        stops_neg=ends_neg
-    )
-    return res
-end
-
-function digitize_genome_one_side(genome_dir::T, side::Symbol=:starts) where T <: AbstractString
-    @assert side in [:starts, :stops] "wrong side symbol: $side, must be either :starts or :stops"
-    @assert isdir(genome_dir) "No such genomic directory"
-    file_prefix = last(splitpath(genome_dir))
-    fastaname = joinpath(genome_dir, "$file_prefix.fna")
-    gffname = joinpath(genome_dir, "$file_prefix.gff")
-    @assert all(isfile.([fastaname, gffname])) "Genomic files not found"
-    
-    fasta_data = readfasta(fastaname)
-    fasta_strings = getindex.(fasta_data, 2)
-    chrom_lengths = length.(fasta_strings)
-    
-    dna_pos = onehot_encode_dna.(fasta_strings; revcomp=false)
-    dna_neg = onehot_encode_dna.(fasta_strings; revcomp=true)
-    
-    chrom_names = getindex.(fasta_data, 1) .|> split .|> first
-    gff_data = open_gff(gffname)
-    
-    borders_pos = CDS_borders_one_side(gff_data, chrom_names, chrom_lengths, side; strand="+")
-    borders_neg = CDS_borders_one_side(gff_data, chrom_names, chrom_lengths, side; strand="-")
-    
-    res = (
-        dna_pos=dna_pos,
-        dna_neg=dna_neg,
-        borders_pos=borders_pos,
-        borders_neg=borders_neg
-    )
-    return res
+function Base.iterate(ds::GenomeDataset)
+    return Base.iterate(ds, 1)
 end
