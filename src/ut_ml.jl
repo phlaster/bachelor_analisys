@@ -10,7 +10,6 @@ function CDS_borders_both_strands(gff_data, chrom_names, chrom_lengths, side::Sy
         zeros(UInt8, chrom_length)
         for chrom_length in chrom_lengths
     ]
-    class_counts = ClassWeights[]
     for (chrom_name, chromosome) in zip(chrom_names, preallocated_chromosomes)
         cds_filter_pos = filter_gff_region(;
             sequence_header=chrom_name,
@@ -31,9 +30,8 @@ function CDS_borders_both_strands(gff_data, chrom_names, chrom_lengths, side::Sy
             ranges_from_GFF_records!(chromosome, CDS_regions_pos, :right; k=0x01)
             ranges_from_GFF_records!(chromosome, CDS_regions_neg, :left; k=0x02)
         end
-        push!(class_counts, class_weights(chromosome))
     end
-    return preallocated_chromosomes, class_counts
+    return preallocated_chromosomes
 end
 
 function class_weights(v::Vector{UInt8})
@@ -64,11 +62,11 @@ function process_genome_one_side(genome_dir::T; side::Symbol=:starts, pad::Int=0
     chrom_lengths = length.(fasta_sequences)
     gff_data = open_gff(gffname)
     
-    labels_padded, class_counts = CDS_borders_both_strands(gff_data, chrom_names, chrom_lengths, side)
+    labels_padded = CDS_borders_both_strands(gff_data, chrom_names, chrom_lengths, side)
     labels_onehot_labels = (0,1,2,3)
     labels_encoded = onehotbatch.(labels_padded, Ref(labels_onehot_labels))
     
-    return (dna_encoded, labels_encoded, class_counts)
+    return (dna_encoded, labels_encoded)
 end
 
 function count_chromosomes(genome_dir::T) where T <: AbstractString
@@ -96,104 +94,51 @@ function add_pad(v::Vector, pad::Int)
     return vcat(leading, v, trailing)
 end
 
-
-const ChromosomeOneHot = OneHotArrays.OneHotMatrix{UInt32, Vector{UInt32}}
-const LabelsOneHot = OneHotArrays.OneHotMatrix{UInt32, Vector{UInt32}}
-
-const ClassWeights = Vector{Float32}
-const GenomePrepared = Tuple{
-    Vector{ChromosomeOneHot}, 
-    Vector{LabelsOneHot},
-    Vector{ClassWeights}
-}
-const IndexedGenome = Tuple{Int, GenomePrepared}
-
-
-struct GenomeDataset
-    genome_dirs::Vector{String}
-    genome_counts::Int
-    chromosome_counts::Vector{Int}
-    pad::Int
-    cds_side::Symbol
-    max_cache_entries::Int
-
-    _cache::Vector{IndexedGenome}
-    _cum_counts::Vector{Int}
-
-    function GenomeDataset(genome_dirs::Vector{T}; cds_side::Symbol=:starts, pad::Int=0, max_cache_entries::Int=10) where T <: AbstractString
-        genome_counts = length(genome_dirs)
-        chromosome_counts = count_chromosomes(genome_dirs)
-        cum_counts = cumsum(chromosome_counts)
-
-        new(
-            string.(genome_dirs),
-            genome_counts,
-            chromosome_counts,
-            pad,
-            cds_side,
-            max_cache_entries,
-            IndexedGenome[],
-            cum_counts
-        )
+function compute_confusion_matrices(true_labels::Vector{Int}, predictions::Vector{Int}, n_classes=4)
+    if length(true_labels) != length(predictions)
+        error("The length of true_labels and predictions must be the same.")
     end
-end
-
-function Base.show(io::IO, ds::GenomeDataset)
-    println(io, "GenomeDataset:")
-    println(io, "  Genome Directories: ", first(ds.genome_dirs), ", ...")
-    println(io, "  Genome Count      : ", ds.genome_counts)
-    println(io, "  Total Chromosomes : ", length(ds))
-    println(io, "  Padding           : ", ds.pad)
-    println(io, "  CDS sides         : ", ds.cds_side)
-    println(io, "  Cache Size        : ", length(ds._cache),"/",ds.max_cache_entries)
-end
-
-function _find_in_cache(cache::Vector{IndexedGenome}, idx::Int)
-    for (genome_idx, genome) in cache
-        if genome_idx == idx
-            return genome
-        end
+    confusion_matrices = [zeros(Int, 2,2) for _ in 1:n_classes]
+    for class in 1:n_classes
+        TP = FP = FN = TN = 0
+        for (t, p) in zip(true_labels, predictions)
+            if t == class
+                if p == class
+                    TP += 1
+                else
+                    FN += 1
+                end
+            else
+                if p == class
+                    FP += 1
+                else
+                    TN += 1
+                end
+            end
+        end        
+        confusion_matrices[class] += [TP FP; FN TN]
     end
-    return nothing
+    return confusion_matrices
 end
 
-function _insert_cache!(ds::GenomeDataset, genome_index::Int, genome::GenomePrepared)
-    length(ds._cache) >= ds.max_cache_entries && popfirst!(ds._cache)
-    push!(ds._cache, (genome_index, genome))
-end
+function compute_metrics(conf_mat::Matrix{Int})
+    TP = conf_mat[1, 1]
+    FP = conf_mat[1, 2]
+    FN = conf_mat[2, 1]
+    TN = conf_mat[2, 2]
 
-function _get_or_load_cache(ds::GenomeDataset, idx::Int)
-    cached = _find_in_cache(ds._cache, idx)
-    !isnothing(cached) && return cached
+    precision = (TP + FP) == 0 ? 0.0 : TP / (TP + FP)
+    recall    = (TP + FN) == 0 ? 0.0 : TP / (TP + FN)
+    specificity = (TN + FP) == 0 ? 0.0 : TN / (TN + FP)
+    accuracy  = (TP + TN + FP + FN) == 0 ? 0.0 : (TP + TN) / (TP + TN + FP + FN)
+    f1_score  = (precision + recall) == 0 ? 0.0 : 2 * precision * recall / (precision + recall)
+    
+    support = TP + FN
 
-    genome = process_genome_one_side(ds.genome_dirs[idx]; side=ds.cds_side, pad=ds.pad)
-    _insert_cache!(ds, idx, genome)
-    return genome
-end
-
-Base.length(ds::GenomeDataset) = last(ds._cum_counts)
-
-function Base.getindex(ds::GenomeDataset, idx::Int)
-    if idx < 1 || idx > length(ds)
-        throw(BoundsError(ds, idx))
-    end
-
-    genome_idx = searchsortedfirst(ds._cum_counts, idx)
-    prev_total = genome_idx == 1 ? 0 : ds._cum_counts[genome_idx - 1]
-    chrom_idx = idx - prev_total
-
-    genome = _get_or_load_cache(ds, genome_idx)
-    return (genome[1][chrom_idx], genome[2][chrom_idx], genome[3][chrom_idx])
-end
-
-function Base.iterate(ds::GenomeDataset, state::Int)
-    if state > length(ds)
-        return nothing
-    else
-        return (ds[state], state + 1)
-    end
-end
-
-function Base.iterate(ds::GenomeDataset)
-    return Base.iterate(ds, 1)
+    return (precision=precision,
+            recall=recall,
+            f1_score=f1_score,
+            specificity=specificity,
+            accuracy=accuracy,
+            support=support)
 end
