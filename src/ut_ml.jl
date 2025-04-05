@@ -116,7 +116,10 @@ function compute_confusion_matrices(true_labels::Vector{Int}, predictions::Vecto
                 end
             end
         end        
-        confusion_matrices[class] += [TP FP; FN TN]
+        confusion_matrices[class] += [
+            TP FP
+            FN TN
+        ]
     end
     return confusion_matrices
 end
@@ -124,21 +127,9 @@ end
 function compute_metrics(conf_mat::Matrix{Int})
     TP = conf_mat[1, 1]
     FP = conf_mat[1, 2]
-    FN = conf_mat[2, 1]
     TN = conf_mat[2, 2]
+    FN = conf_mat[2, 1]
 
-    precision = (TP + FP) == 0 ? 0.0 : TP / (TP + FP)
-    recall    = (TP + FN) == 0 ? 0.0 : TP / (TP + FN)
-    specificity = (TN + FP) == 0 ? 0.0 : TN / (TN + FP)
-    accuracy  = (TP + TN + FP + FN) == 0 ? 0.0 : (TP + TN) / (TP + TN + FP + FN)
-    f1_score  = (precision + recall) == 0 ? 0.0 : 2 * precision * recall / (precision + recall)
-    
-    support = TP + FN
-
-    return (precision=precision,
-            recall=recall,
-            f1_score=f1_score,
-            specificity=specificity,
-            accuracy=accuracy,
-            support=support)
+    cm = ConfusionMTR("Confusion", (TP=TP,FP=FP,TN=TN,FN=FN))
+    return cm
 end

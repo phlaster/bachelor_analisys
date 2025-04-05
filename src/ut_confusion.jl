@@ -27,6 +27,9 @@ struct ConfusionMTR
     rec::Float64
     f1::Float64
     fdr::Float64
+    specificity::Float64
+    support::Int
+
 
     mtype::String
 
@@ -37,11 +40,13 @@ struct ConfusionMTR
     Вычисляет метрики precision, recall, F1 и FDR.
     """
     function ConfusionMTR(mtype::String, cm::@NamedTuple{TP::Int64, FP::Int64, TN::Int64, FN::Int64})
-        prec = cm.TP / (cm.TP + cm.FP)
-        rec = cm.TP / (cm.TP + cm.FN)
-        f1 = 2 * (prec * rec) / (prec + rec)
-        fdr = cm.FP / (cm.TP + cm.FP)
-        new(cm.TP, cm.FP, cm.TN, cm.FN, prec, rec, f1, fdr, mtype)
+        prec = (cm.TP + cm.FP) == 0 ? 0.0 : cm.TP / (cm.TP + cm.FP)
+        rec = (cm.TP + cm.FN) == 0 ? 0.0 : cm.TP / (cm.TP + cm.FN)
+        f1 = 2 * (prec + rec) == 0 ? 0.0 : 2 * prec * rec / (prec + rec)
+        fdr = (cm.TP + cm.FP) == 0 ? 0.0 : cm.FP / (cm.TP + cm.FP)
+        specificity = (cm.TN + cm.FP) == 0 ? 0.0 : cm.TN / (cm.TN + cm.FP)
+        support = cm.TP + cm.FN
+        new(cm.TP, cm.FP, cm.TN, cm.FN, prec, rec, f1, fdr, specificity, support, mtype)
     end
 end
 
@@ -147,4 +152,6 @@ function Base.show(io::IO, cm::ConfusionMTR)
     println(io, "Recall     = $(round(cm.rec, digits=3))")
     println(io, "F1         = $(round(cm.f1, digits=3))")
     println(io, "FDR        = $(round(cm.fdr, digits=3))")
+    println(io, "Specificity= $(round(cm.specificity, digits=3))")
+    println(io, "Support    = $(cm.support)")
 end
