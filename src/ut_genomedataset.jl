@@ -18,6 +18,8 @@ struct GenomeDataset
 
     _cache::Vector{IndexedGenome}
     _cum_counts::Vector{Int}
+    _pending_genomes::Set{Int}
+    _pending_lock::ReentrantLock
 
     function GenomeDataset(genome_dirs::Vector{T}; cds_side::Symbol=:starts, pad::Int=0, max_cache_entries::Int=10) where T <: AbstractString
         genome_counts = length(genome_dirs)
@@ -32,7 +34,9 @@ struct GenomeDataset
             cds_side,
             max_cache_entries,
             IndexedGenome[],
-            cum_counts
+            cum_counts,
+            Set{Int}(),
+            ReentrantLock()
         )
     end
 end
@@ -82,6 +86,36 @@ function Base.getindex(ds::GenomeDataset, idx::Int)
     chrom_idx = idx - prev_total
 
     genome = _get_or_load_cache(ds, genome_idx)
+
+    next_genome_dir_idx = genome_idx + 1
+    if next_genome_dir_idx <= ds.genome_counts
+        cached = _find_in_cache(ds._cache, next_genome_dir_idx)
+        if isnothing(cached)
+            lock(ds._pending_lock) do
+                if !(next_genome_dir_idx in ds._pending_genomes)
+                    push!(ds._pending_genomes, next_genome_dir_idx)
+                    Threads.@spawn begin
+                        try
+                            genome_next = process_genome_one_side(
+                                ds.genome_dirs[next_genome_dir_idx]; 
+                                side=ds.cds_side, 
+                                pad=ds.pad
+                            )
+                            lock(ds._pending_lock) do
+                                _insert_cache!(ds, next_genome_dir_idx, genome_next)
+                                delete!(ds._pending_genomes, next_genome_dir_idx)
+                            end
+                        catch e
+                            lock(ds._pending_lock) do
+                                delete!(ds._pending_genomes, next_genome_dir_idx)
+                            end
+                        end
+                    end
+                end
+            end
+        end
+    end
+
     return (genome[1][chrom_idx], genome[2][chrom_idx])
 end
 
