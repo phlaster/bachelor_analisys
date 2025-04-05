@@ -16,6 +16,10 @@ using Functors
 using Serialization
 using DelimitedFiles
 
+function _remove_last_dim(x)
+    dropdims(x, dims=3)
+end
+
 function create_model(; window_size::Int, input_channels::Int=5, n_classes::Int=4)
     Chain(
         Conv((window_size,), input_channels => 32, pad=0, bias=false),
@@ -30,7 +34,7 @@ function create_model(; window_size::Int, input_channels::Int=5, n_classes::Int=
         Dropout(0.3),
 
         Conv((1,), 64 => n_classes),
-        x -> dropdims(x, dims=3)
+        _remove_last_dim
     )
 end
 
@@ -61,7 +65,7 @@ function split_into_chunks(seq, labels, max_chunk_size)
    return res 
 end
 
-function train_model!(model, dataset::GenomeDataset; epochs=3, lr=0.001, device=gpu, max_chunk_size=5*10^4, save_prefix="")
+function train_model!(model, dataset::GenomeDataset; epochs=1:3, lr=0.001, device=gpu, max_chunk_size=5*10^4, save_prefix="")
     function _add_grads(a, b)
         if isnothing(a)
             if isnothing(b)
@@ -81,9 +85,9 @@ function train_model!(model, dataset::GenomeDataset; epochs=3, lr=0.001, device=
     epoch_losses = Float32[]
     epoch_loss = Inf
 
-    for epoch in 1:epochs
+    for epoch in epochs
         batch_losses = Float32[]
-        @showprogress desc="Epoch $epoch/$epochs" for (seq, labels) in dataset
+        @showprogress desc="Epoch $epoch/$(epochs.stop)" for (seq, labels) in dataset
             accumulated_grads = nothing
             accum_counter = 0
 
@@ -144,18 +148,34 @@ function main()
     PAD = 500
     WINDOW = 2PAD + 1
     TOP_N = 1000
+    n_epochs = 10
 
     pseudomonadota_accs = readdlm("DATA/subsets/pseudomonadota.tsv", '\t')[:, 1] .|> string
     SAVEPREFIX = "psdomndt_top1000_starts_PAD=$PAD"
     dirs = "DATA/genomes/genomes/" .* pseudomonadota_accs[1:TOP_N]
 
     ds_train = GenomeDataset(dirs, cds_side=:starts, pad=PAD,  max_cache_entries=TOP_N)
+    @show ds_train
     device = gpu_device()
-    model = create_model(; window_size=WINDOW)
-    losses = train_model!(model, ds_train; epochs=12, lr=0.001, device=device, save_prefix=SAVEPREFIX)
+    model = if isempty(ARGS)
+        create_model(; window_size=WINDOW)
+    else 
+        _mo = deserialize(ARGS[1])
+        model_fixed = Chain(_mo.layers[1:end-1]..., _remove_last_dim)
+    end
+
+    epochs = if !isempty(ARGS)
+        e_start = parse(Int, last(split(split(ARGS[1], '.')[end-1], '=')))
+        e_start+1:e_start+n_epochs
+    else
+        1:n_epochs
+    end
+    @show epochs
+
+    losses = train_model!(model, ds_train; epochs=epochs, lr=0.001, device=device, save_prefix=SAVEPREFIX)
     conf_matrixes = evaluate_model(model, ds_train; device=device)
 
-    allstats = (losses=losses, conf_mtrx=conf_matrixes, varinfo=varinfo())
+    allstats = (losses=losses, conf_mtrx=conf_matrixes)
     serialize("DATA/saved_models/stats_$SAVEPREFIX", allstats)
 end
 
