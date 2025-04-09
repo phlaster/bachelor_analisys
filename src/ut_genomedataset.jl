@@ -1,9 +1,10 @@
+using Flux: OneHotArrays
 const ChromosomeOneHot = OneHotArrays.OneHotMatrix{UInt32, Vector{UInt32}}
-const LabelsOneHot = OneHotArrays.OneHotMatrix{UInt32, Vector{UInt32}}
+const Labels = Vector{Bool}
 
 const GenomePrepared = Tuple{
     Vector{ChromosomeOneHot}, 
-    Vector{LabelsOneHot},
+    Vector{Labels},
 }
 const IndexedGenome = Tuple{Int, GenomePrepared}
 
@@ -21,7 +22,11 @@ struct GenomeDataset
     _pending_genomes::Set{Int}
     _pending_lock::ReentrantLock
 
-    function GenomeDataset(genome_dirs::Vector{T}; cds_side::Symbol=:starts, pad::Int=0, max_cache_entries::Int=10) where T <: AbstractString
+    function GenomeDataset(genome_dirs::Vector{T};
+        cds_side::Symbol=:starts,
+        pad::Int=0,
+        max_cache_entries::Int=10
+    ) where T <: AbstractString
         genome_counts = length(genome_dirs)
         chromosome_counts = count_chromosomes(genome_dirs)
         cum_counts = cumsum(chromosome_counts)
