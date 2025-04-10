@@ -21,7 +21,10 @@ function parse_commandline()
 
     @add_arg_table! s begin
         "--output_dir", "-o"
-            required = true
+            default = "."
+            help = ""
+        "--suffix", "-s"
+            default = ""
             help = ""
         "--pad", "-p"
             help = ""
@@ -66,6 +69,7 @@ function main()
     args = parse_commandline()
     PAD = args["pad"]
     DIR = args["output_dir"]
+    DIR_SUFFIX = args["suffix"]
     WINDOW = 2PAD + 1
     N_TRAIN = args["train"]
     N_TEST = args["test"]
@@ -73,7 +77,7 @@ function main()
     lr = args["lr"]
     decay_factor = args["decay"]
     floss_gamma = args["gamma"]
-    location = mkpath(joinpath(DIR, string(now())))
+    location = mkpath(joinpath(DIR, string(now())*DIR_SUFFIX ))
     N_GPU = args["device"]
     
     device!(N_GPU)
@@ -97,7 +101,7 @@ function main()
     
     model = create_model(; window_size=WINDOW)
 
-    model, losses, lrs = train_model(model, ds_train, ds_test;
+    train_model(model, ds_train, ds_test;
         epochs=n_epochs,
         lr=lr,
         dev=dev,
