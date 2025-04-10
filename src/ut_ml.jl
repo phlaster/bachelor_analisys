@@ -91,36 +91,6 @@ function add_pad(v::Vector, pad::Int)
     return vcat(leading, v, trailing)
 end
 
-function compute_confusion_matrices(true_labels::Vector{T}, predictions::Vector{T}, n_classes=2) where T <: Integer
-    if length(true_labels) != length(predictions)
-        error("The length of true_labels and predictions must be the same.")
-    end
-    confusion_matrices = [zeros(Int, 2,2) for _ in 1:n_classes]
-    for class in 1:n_classes
-        TP = FP = FN = TN = 0
-        for (t, p) in zip(true_labels, predictions)
-            if t+1 == class
-                if p+1 == class
-                    TP += 1
-                else
-                    FN += 1
-                end
-            else
-                if p+1 == class
-                    FP += 1
-                else
-                    TN += 1
-                end
-            end
-        end        
-        confusion_matrices[class] += [
-            TP FP
-            FN TN
-        ]
-    end
-    return confusion_matrices
-end
-
 function multiclass_confusion(ground_truth, prediction;
     classes=sort!(unique(Iterators.flatten((ground_truth, prediction))))
 )
@@ -188,7 +158,6 @@ end
 
 _remove_singular_dims(x) = dropdims(x, dims=(2,3))
 function create_model(; window_size::Int, input_channels::Int=5)
-    
     Chain(
         Conv((window_size,), input_channels => 128, pad=0, bias=false),
         BatchNorm(128, relu),
@@ -273,11 +242,11 @@ function train_model(model, ds_train::GenomeDataset, ds_test::GenomeDataset;
     @assert epochs>0 && 0<lr≤1 && 0≤floss_gamma && 0<decay_factor≤1 && 0<max_chunk_size≤10^6 "Wrong parameter value"
     @assert isdir(savedir) "Wrong directory name for model saving"
 
-    model_on_dev = model |> dev
+    model = model |> dev
 
-    dev_label = CUDA.device(first(model_on_dev.layers).weight) |> string
+    dev_label = CUDA.device(first(model.layers).weight) |> string
 
-    opt = Flux.setup(Adam(lr), model_on_dev)
+    opt = Flux.setup(Adam(lr), model)
     loss_function(ŷ, y) = Flux.Losses.binary_focal_loss(ŷ, y; gamma=floss_gamma)
 
     losses = Float32[]
@@ -291,8 +260,8 @@ function train_model(model, ds_train::GenomeDataset, ds_test::GenomeDataset;
         @info "Epoch $epoch/$epochs"
         dumpname = joinpath(savedir, "$(dev_label)_epoch_$(lpad(epoch, 3, '0')).flux")
         
-        epoch_loss = _train_epoch!(model_on_dev, ds_train, opt, loss_function, max_chunk_size, dev)
-        class_metrics, conf_mtr, classes = evaluate_bin_class_model(model_on_dev, ds_test; dev=dev, max_chunk_size=max_chunk_size)
+        epoch_loss = _train_epoch!(model, ds_train, opt, loss_function, max_chunk_size, dev)
+        class_metrics, conf_mtr, classes = evaluate_bin_class_model(model, ds_test; dev=dev, max_chunk_size=max_chunk_size)
         
         push!(metrics, class_metrics)
         push!(cms, conf_mtr)
@@ -301,7 +270,7 @@ function train_model(model, ds_train::GenomeDataset, ds_test::GenomeDataset;
         
         dump_data = (
             # Frozen state
-            model=model_on_dev,
+            model=model,
             opt=opt,
 
             # Single-value vars
@@ -320,6 +289,9 @@ function train_model(model, ds_train::GenomeDataset, ds_test::GenomeDataset;
             cm=cms,
             loss=losses
         )
+        @info "Prec  : $(round(class_metrics[1].prec, digits=4))"
+        @info "Recall: $(round(class_metrics[1].rec, digits=4))"
+        @info "F1    : $(round(class_metrics[1].f1, digits=4))"
         
         serialize(dumpname, dump_data)
         @info "Saved training dump: $dumpname"
@@ -327,7 +299,6 @@ function train_model(model, ds_train::GenomeDataset, ds_test::GenomeDataset;
         current_lr = lr * decay_factor^epoch
         Flux.adjust!(opt, current_lr)
     end
-    return cpu(model_on_dev), losses, lrs
 end
 
 function evaluate_bin_class_model(model, dataset; dev=gpu, max_chunk_size=2*10^5)
