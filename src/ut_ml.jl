@@ -186,8 +186,8 @@ function metrics_from_cm(cm, classes)
 end
 
 
+_remove_singular_dims(x) = dropdims(x, dims=(2,3))
 function create_model(; window_size::Int, input_channels::Int=5)
-    _remove_singular_dims(x) = dropdims(x, dims=(2,3))
     
     Chain(
         Conv((window_size,), input_channels => 128, pad=0, bias=false),
@@ -269,8 +269,6 @@ function train_model(model, ds_train::GenomeDataset, ds_test::GenomeDataset;
     decay_factor::Float64=0.6,
     max_chunk_size::Int=2*10^5,
     savedir=".",
-    saveevery::Int=1,
-    evalevery::Int=3
 )   
     @assert epochs>0 && 0<lr≤1 && 0≤floss_gamma && 0<decay_factor≤1 && 0<max_chunk_size≤10^6 "Wrong parameter value"
     @assert isdir(savedir) "Wrong directory name for model saving"
@@ -285,44 +283,49 @@ function train_model(model, ds_train::GenomeDataset, ds_test::GenomeDataset;
     losses = Float32[]
     lrs = Float64[]
     metrics = Dict{Int64, NamedTuple}[]
+    cms = Matrix{Int}[]
+    
     current_lr = lr
 
     for epoch in 1:epochs
         @info "Epoch $epoch/$epochs"
+        dumpname = joinpath(savedir, "$(dev_label)_epoch_$(lpad(epoch, 3, '0')).flux")
+        
         epoch_loss = _train_epoch!(model_on_dev, ds_train, opt, loss_function, max_chunk_size, dev)
-
+        class_metrics, conf_mtr, classes = evaluate_bin_class_model(model_on_dev, ds_test; dev=dev, max_chunk_size=max_chunk_size)
+        
+        push!(metrics, class_metrics)
+        push!(cms, conf_mtr)
         push!(losses, epoch_loss)
         push!(lrs, current_lr)
         
-        if epoch % saveevery == 0 || epoch==epochs
-            modelname = joinpath(savedir, "$(dev_label)_epoch_$(lpad(epoch, 3, '0')).flux")
-            serialize(modelname, model_on_dev)
-            @info "Saved model: $modelname"
-        end
+        dump_data = (
+            # Frozen state
+            model=model_on_dev,
+            opt=opt,
 
-        if epoch % evalevery == 0 || epoch==epochs
-            statsname = joinpath(savedir, "$(dev_label)_epoch_$(lpad(epoch, 3, '0')).stats")
-            class_metrics, conf_mtr, classes = evaluate_bin_class_model(model_on_dev, ds_test; dev=dev)
-
-            stats = (
-                loss=losses,
-                lr=lrs,
-                metrics=class_metrics,
-                cm=conf_mtr,
-                classes=classes,
-                device=dev_label,
-                gamma=floss_gamma,
-                decay=decay_factor,
-                chunk=max_chunk_size,
-                dir=savedir
-            )
-            serialize(statsname, stats)
-            @info "Saved stats: $statsname"
-        end
+            # Single-value vars
+            epoch=epoch,
+            classes=classes,
+            pad=ds_train.pad,
+            device=dev_label,
+            gamma=floss_gamma,
+            decay=decay_factor,
+            chunk=max_chunk_size,
+            dir=savedir,
+            
+            # Train history vars
+            lr=lrs,
+            metrics=metrics,
+            cm=cms,
+            loss=losses
+        )
+        
+        serialize(dumpname, dump_data)
+        @info "Saved training dump: $dumpname"
 
         current_lr = lr * decay_factor^epoch
         Flux.adjust!(opt, current_lr)
-        println()
     end
     return cpu(model_on_dev), losses, lrs
 end
