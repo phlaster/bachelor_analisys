@@ -5,6 +5,7 @@ using MLUtils
 using Statistics
 using ProgressMeter
 using Functors
+using Serialization
 
 
 function CDS_borders_both_strands(gff_data, chrom_names, chrom_lengths, side::Symbol)
@@ -120,14 +121,68 @@ function compute_confusion_matrices(true_labels::Vector{T}, predictions::Vector{
     return confusion_matrices
 end
 
-function compute_metrics(conf_mat::Matrix{Int})
-    TP = conf_mat[1, 1]
-    FP = conf_mat[1, 2]
-    TN = conf_mat[2, 2]
-    FN = conf_mat[2, 1]
+function multiclass_confusion(ground_truth, prediction;
+    classes=sort!(unique(Iterators.flatten((ground_truth, prediction))))
+)
+    if length(ground_truth) != length(prediction)
+        throw(DimensionMismatch("The input vectors must have the same length."))
+    end
 
-    cm = ConfusionMTR("Confusion", (TP=TP,FP=FP,TN=TN,FN=FN))
-    return cm
+    n_classes = length(classes)    
+    cm = zeros(Int, (n_classes, n_classes))
+    class_to_idx = Dict{Int, Int}(class => idx for (idx, class) in enumerate(classes))
+    @inbounds for (actual, predicted) in zip(ground_truth, prediction)
+        row = class_to_idx[actual]
+        col = class_to_idx[predicted]
+        cm[row, col] += 1
+    end
+    return cm, classes
+end
+
+function metrics_from_cm(cm, classes)
+    n_classes = length(classes)
+    if size(cm) != (n_classes, n_classes)
+        throw(DimensionMismatch("Confusion matrix must be a square matrix matching the number of classes."))
+    end
+    
+    metrics_dict = Dict{Int, NamedTuple}()
+    total_samples = sum(cm)
+    
+    for (i, class) in enumerate(classes)
+        tp = cm[i, i]
+        fp = sum(cm[:, i]) - tp
+        fn = sum(cm[i, :]) - tp
+        support = sum(cm[i, :])
+        tn = total_samples - (tp + fp + fn)
+        
+        prec_denom = tp + fp
+        prec = prec_denom == 0 ? NaN : tp / prec_denom
+        
+        rec_denom = tp + fn
+        rec = rec_denom == 0 ? NaN : tp / rec_denom
+        
+        f1_denom = prec + rec
+        f1 = f1_denom == 0 ? NaN : 2 * (prec * rec) / f1_denom
+        
+        fdr_denom = tp + fp
+        fdr = fdr_denom == 0 ? NaN : fp / fdr_denom
+        
+        spec_denom = tn + fp
+        specificity = spec_denom == 0 ? NaN : tn / spec_denom
+        
+        metrics = (
+            prec = prec,
+            rec = rec,
+            f1 = f1,
+            fdr = fdr,
+            specificity = specificity,
+            support = support
+        )
+        
+        metrics_dict[class] = metrics
+    end
+    
+    return metrics_dict, cm, classes
 end
 
 
@@ -172,76 +227,115 @@ end
 
 _transform_X(seq) = reshape(permutedims(seq, (2, 1)), size(seq, 2), size(seq, 1), 1)
 _transform_y(labels) = permutedims(labels, (2, 1))
+_add_grads(a, b) = isnothing(a) ? b : isnothing(b) ? a : a .+ b
+_scale_grads(x, factor) = isnothing(x) ? nothing : x .* factor
 
-function train_model!(model, dataset::GenomeDataset;
-    epochs=1:1,
-    lr=0.001,
-    device=gpu,
-    max_chunk_size=2*10^5
-)
-    function _add_grads(a, b)
-        if isnothing(a)
-            if isnothing(b)
-                return nothing
-            else
-                return b
-            end
-        elseif isnothing(b)
-            return a
-        end
-        return a .+ b
-    end
-    _scale_grads(x, factor) = isnothing(x) ? nothing : x .* factor
+function _train_epoch!(model, dataset, opt, loss_function, max_chunk_size, dev)
+    @info "Optim: $(opt.layers[1].weight.rule)"
     
-    opt_state = Flux.setup(Adam(lr), model)
-    epoch_losses = Float32[]
-    epoch_loss = Inf
+    batch_losses = Float32[]
+    @showprogress desc="Epoch progress:" barlen=50 color=:blue dt=1 showspeed=true for (seq, labels) in dataset
+        accumulated_grads = nothing
+        accum_counter = 0
 
-    for epoch in epochs
-        batch_losses = Float32[]
-        @showprogress desc="Epoch $epoch/$(epochs.stop)" for (seq, labels) in dataset
-            accumulated_grads = nothing
-            accum_counter = 0
+        for (seq_chunk, labels_chunk) in split_into_chunks(seq, labels, max_chunk_size)
+            X = _transform_X(seq_chunk) |> dev
+            y = labels_chunk            |> dev
 
-            for (seq_chunk, labels_chunk) in split_into_chunks(seq, labels, max_chunk_size)
-                X = _transform_X(seq_chunk) |> device
-                y = labels_chunk            |> device
-
-                loss, grads = Flux.withgradient(model) do m
-                    ŷ = m(X)
-                    Flux.Losses.binary_focal_loss(ŷ, y; gamma=3)
-                end
-
-                accumulated_grads = Functors.fmap(_add_grads, accumulated_grads, grads[1])
-                accum_counter += 1
-                push!(batch_losses, loss)
+            loss, grads = Flux.withgradient(model) do m
+                ŷ = m(X)
+                loss_function(ŷ, y)
             end
-
-            if accum_counter > 0
-                scaled_grads = Functors.fmap(x -> _scale_grads(x, inv(accum_counter)), accumulated_grads)
-                Flux.update!(opt_state, model, scaled_grads)
-            end
+            accumulated_grads = Functors.fmap(_add_grads, accumulated_grads, grads[1])
+            accum_counter += 1
+            push!(batch_losses, loss)
         end
 
-        epoch_loss = mean(batch_losses)
-        
-        @info "Mean loss for epoch $epoch: $epoch_loss"
-        push!(epoch_losses, epoch_loss)
+        if accum_counter > 0
+            scaled_grads = Functors.fmap(x -> _scale_grads(x, inv(accum_counter)), accumulated_grads)
+            Flux.update!(opt, model, scaled_grads)
+        end
     end
-    return epoch_losses
+    epoch_loss = mean(batch_losses)
+    @info "Mean loss: $epoch_loss"
+    return epoch_loss
 end
 
-function evaluate_model(model, dataset; device=gpu, max_chunk_size=2*10^5, n_classes=2)
+function train_model(model, ds_train::GenomeDataset, ds_test::GenomeDataset;
+    epochs::Int=1,
+    lr::Float64=0.005,
+    dev=gpu,
+    floss_gamma::Float64=3.0,
+    decay_factor::Float64=0.6,
+    max_chunk_size::Int=2*10^5,
+    savedir=".",
+    saveevery::Int=1,
+    evalevery::Int=3
+)   
+    @assert epochs>0 && 0<lr≤1 && 0≤floss_gamma && 0<decay_factor≤1 && 0<max_chunk_size≤10^6 "Wrong parameter value"
+    @assert isdir(savedir) "Wrong directory name for model saving"
 
-    cm_classes = [zeros(Int, 2,2) for _ in 1:n_classes]
+    model_on_dev = model |> dev
 
-    @showprogress desc = "Evaluating" for (seq, labels) in dataset
+    dev_label = CUDA.device(first(model_on_dev.layers).weight) |> string
+
+    opt = Flux.setup(Adam(lr), model_on_dev)
+    loss_function(ŷ, y) = Flux.Losses.binary_focal_loss(ŷ, y; gamma=floss_gamma)
+
+    losses = Float32[]
+    lrs = Float64[]
+    metrics = Dict{Int64, NamedTuple}[]
+    current_lr = lr
+
+    for epoch in 1:epochs
+        @info "Epoch $epoch/$epochs"
+        epoch_loss = _train_epoch!(model_on_dev, ds_train, opt, loss_function, max_chunk_size, dev)
+
+        push!(losses, epoch_loss)
+        push!(lrs, current_lr)
+        
+        if epoch % saveevery == 0 || epoch==epochs
+            modelname = joinpath(savedir, "$(dev_label)_epoch_$(lpad(epoch, 3, '0')).flux")
+            serialize(modelname, model_on_dev)
+            @info "Saved model: $modelname"
+        end
+
+        if epoch % evalevery == 0 || epoch==epochs
+            statsname = joinpath(savedir, "$(dev_label)_epoch_$(lpad(epoch, 3, '0')).stats")
+            class_metrics, conf_mtr, classes = evaluate_bin_class_model(model_on_dev, ds_test; dev=dev)
+
+            stats = (
+                loss=losses,
+                lr=lrs,
+                metrics=class_metrics,
+                cm=conf_mtr,
+                classes=classes,
+                device=dev_label,
+                gamma=floss_gamma,
+                decay=decay_factor,
+                chunk=max_chunk_size,
+                dir=savedir
+            )
+            serialize(statsname, stats)
+            @info "Saved stats: $statsname"
+        end
+
+        current_lr = lr * decay_factor^epoch
+        Flux.adjust!(opt, current_lr)
+        println()
+    end
+    return cpu(model_on_dev), losses, lrs
+end
+
+function evaluate_bin_class_model(model, dataset; dev=gpu, max_chunk_size=2*10^5)
+    cm_classes = zeros(Int, 2,2)
+    classes = (0,1)
+    @showprogress desc="Evaluating:" barlen=50 color=:white showspeed=true for (seq, labels) in dataset
         for (seq_chunk, labels_chunk) in split_into_chunks(seq, labels, max_chunk_size)        
-            X = _transform_X(seq_chunk) |> device
+            X = _transform_X(seq_chunk) |> dev
             y_pred = model(X) .|> >=(0.5f0) |> cpu
-            cm_classes .+= compute_confusion_matrices(collect(labels_chunk), y_pred)
+            cm_classes .+= multiclass_confusion(labels_chunk, y_pred; classes=classes)[1]
         end
     end
-
-    return compute_metrics.(cm_classes)
+    return metrics_from_cm(cm_classes, classes)
 end
