@@ -124,6 +124,10 @@ function Base.getindex(ds::GenomeDataset, idx::Int)
     return (genome[1][chrom_idx], genome[2][chrom_idx])
 end
 
+function Base.lastindex(ds::GenomeDataset)
+    return length(ds)
+end
+
 function Base.iterate(ds::GenomeDataset, state::Int)
     if state > length(ds)
         return nothing
