@@ -205,8 +205,8 @@ function train_model(model, ds_train::GenomeDataset, ds_test::GenomeDataset;
         
         dump_data = (
             # Frozen state
-            model=model,
-            opt=opt,
+            model=model |> cpu,
+            opt=opt |> cpu,
 
             # Single-value vars
             epoch=epoch,
