@@ -44,15 +44,15 @@ function parse_commandline()
             arg_type = Int64
             range_tester = x->x≥1
         "--lr", "-l"
-            default = 5e-3
+            default = 2e-3
             arg_type = Float64
             range_tester = x->0<x<1
         "--decay", "-d"
-            default = 0.6
+            default = 0.8
             arg_type = Float64
             range_tester = x->0<x≤1
         "--gamma", "-g"
-            default = 3.0
+            default = 3.5
             arg_type = Float64
             range_tester = x->0≤x
         "--device", "-D"
