@@ -155,3 +155,67 @@ function Base.show(io::IO, cm::ConfusionMTR)
     println(io, "Specificity= $(round(cm.specificity, digits=3))")
     println(io, "Support    = $(cm.support)")
 end
+
+function multiclass_confusion(ground_truth, prediction;
+    classes=sort!(unique(Iterators.flatten((ground_truth, prediction))))
+)
+    if length(ground_truth) != length(prediction)
+        throw(DimensionMismatch("The input vectors must have the same length."))
+    end
+
+    n_classes = length(classes)    
+    cm = zeros(Int, (n_classes, n_classes))
+    class_to_idx = Dict{Int, Int}(class => idx for (idx, class) in enumerate(classes))
+    @inbounds for (actual, predicted) in zip(ground_truth, prediction)
+        row = class_to_idx[actual]
+        col = class_to_idx[predicted]
+        cm[row, col] += 1
+    end
+    return cm, classes
+end
+
+function metrics_from_cm(cm, classes)
+    n_classes = length(classes)
+    if size(cm) != (n_classes, n_classes)
+        throw(DimensionMismatch("Confusion matrix must be a square matrix matching the number of classes."))
+    end
+    
+    metrics_dict = Dict{Int, NamedTuple}()
+    total_samples = sum(cm)
+    
+    for (i, class) in enumerate(classes)
+        tp = cm[i, i]
+        fp = sum(cm[:, i]) - tp
+        fn = sum(cm[i, :]) - tp
+        support = sum(cm[i, :])
+        tn = total_samples - (tp + fp + fn)
+        
+        prec_denom = tp + fp
+        prec = prec_denom == 0 ? NaN : tp / prec_denom
+        
+        rec_denom = tp + fn
+        rec = rec_denom == 0 ? NaN : tp / rec_denom
+        
+        f1_denom = prec + rec
+        f1 = f1_denom == 0 ? NaN : 2 * (prec * rec) / f1_denom
+        
+        fdr_denom = tp + fp
+        fdr = fdr_denom == 0 ? NaN : fp / fdr_denom
+        
+        spec_denom = tn + fp
+        specificity = spec_denom == 0 ? NaN : tn / spec_denom
+        
+        metrics = (
+            prec = prec,
+            rec = rec,
+            f1 = f1,
+            fdr = fdr,
+            specificity = specificity,
+            support = support
+        )
+        
+        metrics_dict[class] = metrics
+    end
+    
+    return metrics_dict, cm, classes
+end
