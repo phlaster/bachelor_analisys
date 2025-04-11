@@ -137,5 +137,5 @@ function Base.iterate(ds::GenomeDataset, state::Int)
 end
 
 function Base.iterate(ds::GenomeDataset)
-    return Base.iterate(ds, 1)
+    return iterate(ds, 1)
 end
