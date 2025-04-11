@@ -75,7 +75,7 @@ function count_chromosomes(genome_dir::T) where T <: AbstractString
 end
 
 function count_chromosomes(genome_dirs::Vector{T}) where T <: AbstractString
-    tasks = [@async count_chromosomes(dir) for dir in genome_dirs]
+    tasks = [Threads.@spawn count_chromosomes(dir) for dir in genome_dirs]
     results = fetch.(tasks)
     return results
 end
