@@ -101,7 +101,7 @@ function create_model(; window_size::Int, input_channels::Int=5)
         Conv((3,), 128 => 64, pad=1, bias=false),
         BatchNorm(64, relu),
         Dropout(0.1),
-        
+
         Conv((3,), 64 => 64, pad=1, bias=false),
         BatchNorm(64, relu),
         
@@ -134,17 +134,34 @@ _transform_y(labels) = permutedims(labels, (2, 1))
 _add_grads(a, b) = isnothing(a) ? b : isnothing(b) ? a : a .+ b
 _scale_grads(x, factor) = isnothing(x) ? nothing : x .* factor
 
-function _train_epoch!(model, dataset, opt, loss_function, max_chunk_size, dev)
+function _train_epoch!(model, dataset, opt, loss_function, max_chunk_size, dev, chunk_skip_coeff)
     @info "Optim: $(opt.layers[1].weight.rule)"
     
     batch_losses = Float32[]
+    n_labels = 0
+    n_positive = 0
+    n_chunks = 0
+    skipped_chunks = 0
     @showprogress desc="Epoch progress:" barlen=50 color=:blue dt=1 showspeed=true for (seq, labels) in dataset
         accumulated_grads = nothing
         accum_counter = 0
 
-        for (seq_chunk, labels_chunk) in split_into_chunks(seq, labels, max_chunk_size)
-            X = _transform_X(seq_chunk) |> dev
-            y = labels_chunk            |> dev
+        for (chunk_X, chunk_y) in split_into_chunks(seq, labels, max_chunk_size)
+            n_chunks += 1
+            n_labels_chunk = length(labels)
+            n_chunk_positive = sum(labels)
+            n_labels += n_labels_chunk
+            n_positive += n_chunk_positive
+            if n_chunk_positive/n_labels_chunk < n_positive/n_labels * chunk_skip_coeff
+                # skipping chunks with low positive class representation
+                # comparing chunk positive class frequency (pcf) with overall pcf
+                # logs are used to avoid integer overflow
+                skipped_chunks += 1
+                continue
+            end
+
+            X = _transform_X(chunk_X) |> dev
+            y = chunk_y               |> dev
 
             loss, grads = Flux.withgradient(model) do m
                 ŷ = m(X)
@@ -161,8 +178,9 @@ function _train_epoch!(model, dataset, opt, loss_function, max_chunk_size, dev)
         end
     end
     epoch_loss = mean(batch_losses)
-    @info "Mean loss: $epoch_loss"
-    return epoch_loss
+    @info "Chunks skipped: $skipped_chunks/$n_chunks = $(round(skipped_chunks/n_chunks, digits=3))"
+    @info "Mean loss     : $epoch_loss"
+    return epoch_loss, skipped_chunks, n_chunks
 end
 
 function train_model(model, ds_train::GenomeDataset, ds_test::GenomeDataset;
@@ -172,9 +190,17 @@ function train_model(model, ds_train::GenomeDataset, ds_test::GenomeDataset;
     floss_gamma::Float64=3.0,
     decay_factor::Float64=0.6,
     max_chunk_size::Int=2*10^5,
+    chunk_skip_coeff::Float64=0.0,
     savedir=".",
 )   
-    @assert epochs>0 && 0<lr≤1 && 0≤floss_gamma && 0<decay_factor≤1 && 0<max_chunk_size≤10^6 "Wrong parameter value"
+    @assert all([
+        epochs>0,
+        0<lr≤1,
+        0≤floss_gamma,
+        0<decay_factor≤1,
+        0<max_chunk_size≤10^6,
+        0≤chunk_skip_coeff
+    ]) "Wrong parameter value"
     @assert isdir(savedir) "Wrong directory name for model saving"
 
     model = model |> dev
@@ -195,7 +221,9 @@ function train_model(model, ds_train::GenomeDataset, ds_test::GenomeDataset;
         @info "Epoch $epoch/$epochs"
         dumpname = joinpath(savedir, "$(dev_label)_epoch_$(lpad(epoch, 3, '0')).flux")
         
-        epoch_loss = _train_epoch!(model, ds_train, opt, loss_function, max_chunk_size, dev)
+        epoch_loss, skipped_chunks, n_chunks = _train_epoch!(
+            model, ds_train, opt, loss_function, max_chunk_size, dev, chunk_skip_coeff
+        )
         class_metrics, conf_mtr, classes = evaluate_bin_class_model(model, ds_test; dev=dev, max_chunk_size=max_chunk_size)
         
         push!(metrics, class_metrics)
@@ -216,6 +244,9 @@ function train_model(model, ds_train::GenomeDataset, ds_test::GenomeDataset;
             gamma=floss_gamma,
             decay=decay_factor,
             chunk=max_chunk_size,
+            chunk_skip=chunk_skip_coeff,
+            n_chunks=n_chunks,
+            skipped_chunks=skipped_chunks,
             dir=savedir,
             
             # Train history vars
