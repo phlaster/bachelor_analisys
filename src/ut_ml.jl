@@ -267,6 +267,93 @@ function train_model(model, ds_train::GenomeDataset, ds_test::GenomeDataset;
     end
 end
 
+function dotrain_model(model, ds_train::GenomeDataset, ds_test::GenomeDataset;
+    epochs::Int,
+    dev,
+    opt,
+    elapsed_epochs::Int,
+    floss_gamma::Float64,
+    decay_factor::Float64,
+    max_chunk_size::Int,
+    chunk_skip_coeff::Float64,
+    losses::Vector{Float32},
+    lrs::Vector{Float64},
+    metrics::Vector{Dict{Int64, NamedTuple}},
+    cms::Vector{Matrix{Int}},
+    savedir,
+)   
+    @assert all([
+        epochs>0,
+        length(losses)==length(lrs)==length(metrics)==length(cms)==elapsed_epochs,
+        0≤ floss_gamma,
+        0< decay_factor ≤1,
+        0< max_chunk_size ≤10^6,
+        0≤ chunk_skip_coeff
+    ]) "Wrong parameter value"
+    @assert isdir(savedir) "Wrong directory name for model saving"
+
+    model = model |> dev
+    opt = opt |> dev
+
+    dev_label = CUDA.device(first(model.layers).weight) |> string
+    loss_function(ŷ, y) = Flux.Losses.binary_focal_loss(ŷ, y; gamma=floss_gamma)
+    current_lr = last(lrs) * decay_factor
+
+    start_epoch = elapsed_epochs+1
+    last_epoch = start_epoch + epochs-1
+    for epoch in start_epoch:last_epoch
+        @info "Epoch $epoch/$last_epoch"
+        dumpname = joinpath(savedir, "$(dev_label)_epoch_$(lpad(epoch, 3, '0')).flux")
+        
+        epoch_loss, skipped_chunks, n_chunks = _train_epoch!(
+            model, ds_train, opt, loss_function, max_chunk_size, dev, chunk_skip_coeff
+        )
+        class_metrics, conf_mtr, classes = evaluate_bin_class_model(
+            model, ds_test; dev=dev, max_chunk_size=max_chunk_size
+        )
+        
+        push!(metrics, class_metrics)
+        push!(cms, conf_mtr)
+        push!(losses, epoch_loss)
+        push!(lrs, current_lr)
+        
+        dump_data = (
+            # Frozen state
+            model=model |> cpu,
+            opt=opt |> cpu,
+
+            # Single-value vars
+            epoch=epoch,
+            classes=classes,
+            pad=ds_train.pad,
+            device=dev_label,
+            gamma=floss_gamma,
+            decay=decay_factor,
+            chunk=max_chunk_size,
+            chunk_skip=chunk_skip_coeff,
+            n_chunks=n_chunks,
+            skipped_chunks=skipped_chunks,
+            dir=savedir,
+            
+            # Train history vars
+            lr=lrs,
+            metrics=metrics,
+            cm=cms,
+            loss=losses
+        )
+        @info "Prec  : $(round(class_metrics[1].prec, digits=4))"
+        @info "Recall: $(round(class_metrics[1].rec, digits=4))"
+        @info "F1    : $(round(class_metrics[1].f1, digits=4))"
+        
+        serialize(dumpname, dump_data)
+        @info "Saved training dump: $dumpname"
+
+        current_lr *= decay_factor
+        Flux.adjust!(opt, current_lr)
+    end
+end
+
+
 function evaluate_bin_class_model(model, dataset; dev=gpu, max_chunk_size=2*10^5)
     cm_classes = zeros(Int, 2,2)
     classes = (0,1)
