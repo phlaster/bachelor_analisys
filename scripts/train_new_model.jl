@@ -116,21 +116,6 @@ function main()
         chunk_skip_coeff=chunk_skip_coeff,
         savedir=location
     )
-
-    # Threads.@threads for gpu_id in 0:3
-    #     CUDA.device!(gpu_id)
-    #     dev = gpu_device()
-    #     model = create_model(; window_size=WINDOW)
-    #     train_model(model, ds_train, ds_test;
-    #         epochs=n_epochs,
-    #         lr=lr,
-    #         dev=dev,
-    #         floss_gamma=floss_gamma,
-    #         decay_factor=decay_factor,
-    #         chunk_skip_coeff=chunk_skip_coeff + 0.05gpu_id,
-    #         savedir=location
-    #     )
-    # end
 end
 
 if abspath(PROGRAM_FILE) == @__FILE__
