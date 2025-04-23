@@ -6,6 +6,7 @@ using Statistics
 using ProgressMeter
 using Functors
 using Serialization
+using StatsBase
 
 
 function CDS_borders_both_strands(gff_data, chrom_names, chrom_lengths, side::Symbol)
@@ -96,11 +97,11 @@ function create_model(; window_size::Int, input_channels::Int=5)
     Chain(
         Conv((window_size,), input_channels => 128, pad=0, bias=false),
         BatchNorm(128, relu),
-        Dropout(0.1),
+        Dropout(0.15),
         
-        Conv((3,), 128 => 64, pad=1, bias=false),
+        Conv((5,), 128 => 64, pad=2, bias=false),
         BatchNorm(64, relu),
-        Dropout(0.1),
+        Dropout(0.15),
 
         Conv((3,), 64 => 64, pad=1, bias=false),
         BatchNorm(64, relu),
@@ -308,7 +309,7 @@ function dotrain_model(model, ds_train::GenomeDataset, ds_test::GenomeDataset;
         epoch_loss, skipped_chunks, n_chunks = _train_epoch!(
             model, ds_train, opt, loss_function, max_chunk_size, dev, chunk_skip_coeff
         )
-        class_metrics, conf_mtr, classes = evaluate_bin_class_model(
+        (class_metrics, conf_mtr, classes), fp_shifts, gt_s2s_ranges, pred_s2s_ranges = evaluate_bin_class_model(
             model, ds_test; dev=dev, max_chunk_size=max_chunk_size
         )
         
@@ -339,7 +340,12 @@ function dotrain_model(model, ds_train::GenomeDataset, ds_test::GenomeDataset;
             lr=lrs,
             metrics=metrics,
             cm=cms,
-            loss=losses
+            loss=losses,
+
+            # Aggregated countmaps
+            fp_shifts=fp_shifts,
+            cds_ranges_true=gt_s2s_ranges,
+            cds_ranges_model=pred_s2s_ranges
         )
         @info "Prec  : $(round(class_metrics[1].prec, digits=4))"
         @info "Recall: $(round(class_metrics[1].rec, digits=4))"
@@ -353,16 +359,132 @@ function dotrain_model(model, ds_train::GenomeDataset, ds_test::GenomeDataset;
     end
 end
 
+function true_distances_inside_chunk(v)
+    if eltype(v) != Bool
+        throw(TypeError(:true_distances_inside_chunk, Bool, eltype(v)))
+    end
+    v |> findall |> diff
+end
+
 
 function evaluate_bin_class_model(model, dataset; dev=gpu, max_chunk_size=2*10^5)
     cm_classes = zeros(Int, 2,2)
+    fp_shifts = Dict{Int, Int}()
+    gt_s2s_ranges = Dict{Int, Int}() # start-to-start
+    pred_s2s_ranges = Dict{Int, Int}()
+    
     classes = (0,1)
     @showprogress desc="Evaluating:" barlen=50 color=:white showspeed=true for (seq, labels) in dataset
         for (seq_chunk, labels_chunk) in split_into_chunks(seq, labels, max_chunk_size)        
             X = _transform_X(seq_chunk) |> dev
             y_pred = model(X) .|> >=(0.5f0) |> cpu
             cm_classes .+= multiclass_confusion(labels_chunk, y_pred; classes=classes)[1]
+
+            addvals!(fp_shifts,       false_positive_stats(labels_chunk, y_pred)|> countmap)
+            addvals!(gt_s2s_ranges,   true_distances_inside_chunk(labels_chunk) |> countmap)
+            addvals!(pred_s2s_ranges, true_distances_inside_chunk(y_pred)       |> countmap)
         end
     end
-    return metrics_from_cm(cm_classes, classes)
+    return metrics_from_cm(cm_classes, classes), fp_shifts, gt_s2s_ranges, pred_s2s_ranges
 end
+
+function addvals!(d1::Dict{T, Int64}, d2::Dict{T, Int64}) where T
+    for k2 in keys(d2)
+        if haskey(d1, k2)
+            d1[k2] += d2[k2]
+        else
+            d1[k2] = d2[k2]
+        end
+    end
+end
+
+function false_positive_stats(ground_truth, predicted)
+    @assert length(ground_truth) == length(predicted) "Vectors must be of equal length"
+    
+    ground_truth_idx = findall(ground_truth)    
+    matched_ground_truth = Set{Int}()
+    fp_candidates = Int[]
+    
+    for i in eachindex(ground_truth)
+        if predicted[i]
+            if ground_truth[i]
+                push!(matched_ground_truth, i)
+            else
+                push!(fp_candidates, i)
+            end
+        end
+    end
+
+    unmatched_ground_truth = [i for i in ground_truth_idx if i ∉ matched_ground_truth]
+    matched_distances = Int[]
+   
+    candidates = NTuple{4, Int}[]
+    for fp in fp_candidates
+        for gt in unmatched_ground_truth
+            signed_dist = gt - fp   # signed distance (negative if gt < fp)
+            abs_dist = abs(signed_dist)
+            push!(candidates, (abs_dist, fp, gt, signed_dist))
+        end
+    end
+    sorted_candidates = sort(candidates, by = first)
+    
+    unmatched_set = Set(unmatched_ground_truth)
+    matched_fp = Set{Int}()
+
+    for candidate in sorted_candidates
+        _, fp, gt, signed_dist = candidate
+        if (fp ∉ matched_fp) && (gt ∈ unmatched_set)
+            push!(matched_distances, signed_dist)
+            push!(matched_fp, fp)
+            delete!(unmatched_set, gt)
+        end
+    end
+
+    return matched_distances
+end
+
+# function calculate_fp_distances(model, dataset; dev=gpu, max_chunk_size=2*10^5)
+#     distances = Int[]
+#     @showprogress desc="Calculating FP distances:" barlen=50 color=:white showspeed=true for (seq, labels) in dataset
+#         for (seq_chunk, labels_chunk) in split_into_chunks(seq, labels, max_chunk_size)        
+#             X = _transform_X(seq_chunk) |> dev
+#             y_pred = model(X) .|> >=(0.5f0) |> cpu
+#             y_pred = vec(y_pred)  # Ensure it's a 1D array
+#             labels_chunk = vec(labels_chunk)  # Ensure it's a 1D array
+            
+#             # Find false positives (predicted 1 where label is 0)
+#             fps = findall(y_pred .& (labels_chunk .== 0))
+#             # Find true positives (label is 1)
+#             tps = findall(labels_chunk .== 1)
+            
+#             if isempty(tps)
+#                 continue  # Skip if no TPs in this chunk
+#             end
+            
+#             tps_sorted = sort(tps)  # Ensure TPs are sorted
+            
+#             for i in fps
+#                 # Find the closest TP using binary search
+#                 idx = searchsortedfirst(tps_sorted, i)
+#                 left = idx > 1 ? tps_sorted[idx-1] : nothing
+#                 right = idx <= length(tps_sorted) ? tps_sorted[idx] : nothing
+                
+#                 # Collect possible distances
+#                 candidates = Int[]
+#                 if left !== nothing
+#                     push!(candidates, left - i)
+#                 end
+#                 if right !== nothing
+#                     push!(candidates, right - i)
+#                 end
+                
+#                 if !isempty(candidates)
+#                     # Find the candidate with minimal absolute distance
+#                     min_idx = argmin(abs.(candidates))
+#                     push!(distances, candidates[min_idx])
+#                 end
+#             end
+#         end
+#     end
+#     return distances
+# end
