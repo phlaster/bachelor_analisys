@@ -366,38 +366,6 @@ function true_distances_inside_chunk(v)
     v |> findall |> diff
 end
 
-
-function evaluate_bin_class_model(model, dataset; dev=gpu, max_chunk_size=2*10^5)
-    cm_classes = zeros(Int, 2,2)
-    fp_shifts = Dict{Int, Int}()
-    gt_s2s_ranges = Dict{Int, Int}() # start-to-start
-    pred_s2s_ranges = Dict{Int, Int}()
-    
-    classes = (0,1)
-    @showprogress desc="Evaluating:" barlen=50 color=:white showspeed=true for (seq, labels) in dataset
-        for (seq_chunk, labels_chunk) in split_into_chunks(seq, labels, max_chunk_size)        
-            X = _transform_X(seq_chunk) |> dev
-            y_pred = model(X) .|> >=(0.5f0) |> cpu
-            cm_classes .+= multiclass_confusion(labels_chunk, y_pred; classes=classes)[1]
-
-            addvals!(fp_shifts,       false_positive_stats(labels_chunk, y_pred)|> countmap)
-            addvals!(gt_s2s_ranges,   true_distances_inside_chunk(labels_chunk) |> countmap)
-            addvals!(pred_s2s_ranges, true_distances_inside_chunk(y_pred)       |> countmap)
-        end
-    end
-    return metrics_from_cm(cm_classes, classes), fp_shifts, gt_s2s_ranges, pred_s2s_ranges
-end
-
-function addvals!(d1::Dict{T, Int64}, d2::Dict{T, Int64}) where T
-    for k2 in keys(d2)
-        if haskey(d1, k2)
-            d1[k2] += d2[k2]
-        else
-            d1[k2] = d2[k2]
-        end
-    end
-end
-
 function false_positive_stats(ground_truth, predicted)
     @assert length(ground_truth) == length(predicted) "Vectors must be of equal length"
     
@@ -443,48 +411,34 @@ function false_positive_stats(ground_truth, predicted)
     return matched_distances
 end
 
-# function calculate_fp_distances(model, dataset; dev=gpu, max_chunk_size=2*10^5)
-#     distances = Int[]
-#     @showprogress desc="Calculating FP distances:" barlen=50 color=:white showspeed=true for (seq, labels) in dataset
-#         for (seq_chunk, labels_chunk) in split_into_chunks(seq, labels, max_chunk_size)        
-#             X = _transform_X(seq_chunk) |> dev
-#             y_pred = model(X) .|> >=(0.5f0) |> cpu
-#             y_pred = vec(y_pred)  # Ensure it's a 1D array
-#             labels_chunk = vec(labels_chunk)  # Ensure it's a 1D array
-            
-#             # Find false positives (predicted 1 where label is 0)
-#             fps = findall(y_pred .& (labels_chunk .== 0))
-#             # Find true positives (label is 1)
-#             tps = findall(labels_chunk .== 1)
-            
-#             if isempty(tps)
-#                 continue  # Skip if no TPs in this chunk
-#             end
-            
-#             tps_sorted = sort(tps)  # Ensure TPs are sorted
-            
-#             for i in fps
-#                 # Find the closest TP using binary search
-#                 idx = searchsortedfirst(tps_sorted, i)
-#                 left = idx > 1 ? tps_sorted[idx-1] : nothing
-#                 right = idx <= length(tps_sorted) ? tps_sorted[idx] : nothing
-                
-#                 # Collect possible distances
-#                 candidates = Int[]
-#                 if left !== nothing
-#                     push!(candidates, left - i)
-#                 end
-#                 if right !== nothing
-#                     push!(candidates, right - i)
-#                 end
-                
-#                 if !isempty(candidates)
-#                     # Find the candidate with minimal absolute distance
-#                     min_idx = argmin(abs.(candidates))
-#                     push!(distances, candidates[min_idx])
-#                 end
-#             end
-#         end
-#     end
-#     return distances
-# end
+function evaluate_bin_class_model(model, dataset; dev=gpu, max_chunk_size=2*10^5)
+    function addvals!(d1::Dict{T, Int64}, d2::Dict{T, Int64}) where T
+        for k2 in keys(d2)
+            if haskey(d1, k2)
+                d1[k2] += d2[k2]
+            else
+                d1[k2] = d2[k2]
+            end
+        end
+    end
+    
+    cm_classes = zeros(Int, 2,2)
+    fp_shifts = Dict{Int, Int}()
+    gt_s2s_ranges = Dict{Int, Int}() # start-to-start
+    pred_s2s_ranges = Dict{Int, Int}()
+    
+    classes = (0,1)
+    @showprogress desc="Evaluating:" barlen=50 color=:white showspeed=true for (seq, labels) in dataset
+        for (seq_chunk, labels_chunk) in split_into_chunks(seq, labels, max_chunk_size)        
+            X = _transform_X(seq_chunk) |> dev
+            y_pred = model(X) .|> >=(0.5f0) |> cpu
+            cm_classes .+= multiclass_confusion(labels_chunk, y_pred; classes=classes)[1]
+
+            addvals!(fp_shifts,       false_positive_stats(labels_chunk, y_pred)|> countmap)
+            addvals!(gt_s2s_ranges,   true_distances_inside_chunk(labels_chunk) |> countmap)
+            addvals!(pred_s2s_ranges, true_distances_inside_chunk(y_pred)       |> countmap)
+        end
+    end
+    return metrics_from_cm(cm_classes, classes), fp_shifts, gt_s2s_ranges, pred_s2s_ranges
+end
+
