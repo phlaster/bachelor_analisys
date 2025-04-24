@@ -6,7 +6,7 @@ using StatsBase
 
 function save_plotly(savename, plt)
     mkpath(dirname(savename))
-    PlotlyJS.savefig(plt, savename)
+    PlotlyJS.savefig(plt, savename, width=1200, height=900)
     @info "Sankey diagram saved to $savename"
 end
 
