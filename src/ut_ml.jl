@@ -225,7 +225,9 @@ function train_model(model, ds_train::GenomeDataset, ds_test::GenomeDataset;
         epoch_loss, skipped_chunks, n_chunks = _train_epoch!(
             model, ds_train, opt, loss_function, max_chunk_size, dev, chunk_skip_coeff
         )
-        class_metrics, conf_mtr, classes = evaluate_bin_class_model(model, ds_test; dev=dev, max_chunk_size=max_chunk_size)
+        (class_metrics, conf_mtr, classes), fp_shifts, gt_s2s_ranges, pred_s2s_ranges = evaluate_bin_class_model(
+            model, ds_test; dev=dev, max_chunk_size=max_chunk_size
+        )
         
         push!(metrics, class_metrics)
         push!(cms, conf_mtr)
@@ -254,7 +256,12 @@ function train_model(model, ds_train::GenomeDataset, ds_test::GenomeDataset;
             lr=lrs,
             metrics=metrics,
             cm=cms,
-            loss=losses
+            loss=losses,
+
+            # Aggregated countmaps
+            fp_shifts=fp_shifts,
+            cds_ranges_true=gt_s2s_ranges,
+            cds_ranges_model=pred_s2s_ranges
         )
         @info "Prec  : $(round(class_metrics[1].prec, digits=4))"
         @info "Recall: $(round(class_metrics[1].rec, digits=4))"
