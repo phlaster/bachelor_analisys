@@ -74,10 +74,10 @@ end
     ground_truth = falses(15)
     predicted    = falses(15)
     for i in [2,6,10,14]
-      ground_truth[i] = true
+        ground_truth[i] = true
     end
     for i in [3,6,11,14,15]
-      predicted[i] = true
+        predicted[i] = true
     end
     # Direct matches at positions 6 and 14; unmatched real positives: 2 and 10; FP candidates: 3, 11, 15.
     # Expected result: [-1.0, -1.0] (order not important if algorithm collects by closeness)
@@ -148,4 +148,79 @@ end
     ground_truth = [true, false, true]
     predicted = [true, false]
     @test_throws AssertionError false_positive_stats(ground_truth, predicted)
+
+    # Test Case 1: Basic matching with two FPs and two TPs
+    ground_truth = Bool[1, 0, 1, 0, 1]
+    predicted =    Bool[0, 1, 0, 1, 0]
+    @test false_positive_stats(ground_truth, predicted) == [-1, -1]
+
+    # Test Case 2: FP between two TPs, but one is already matched
+    ground_truth = Bool[1, 0, 1, 0, 1]
+    predicted =    Bool[0, 1, 1, 0, 0]
+    @test false_positive_stats(ground_truth, predicted) == [-1]
+
+    # Test Case 3: No TPs (all ground truth negatives)
+    ground_truth = Bool[0, 0, 0]
+    predicted =    Bool[1, 1, 1]
+    @test false_positive_stats(ground_truth, predicted) == Int[]
+
+    # Test Case 4: No FPs (all predictions correct)
+    ground_truth = Bool[1, 0, 1]
+    predicted =    Bool[0, 0, 0]
+    @test false_positive_stats(ground_truth, predicted) == Int[]
+
+    # Test Case 5: FP closer to left TP
+    ground_truth = Bool[1, 0, 0, 1]
+    predicted =    Bool[0, 1, 0, 0]
+    @test false_positive_stats(ground_truth, predicted) == [-1]
+
+    # Test Case 6: FP closer to right TP
+    ground_truth = Bool[0, 0, 1]
+    predicted =    Bool[1, 0, 0]
+    @test false_positive_stats(ground_truth, predicted) == [2]
+
+    # Test Case 7: Multiple FPs and TPs with intermediate matches
+    ground_truth = Bool[1, 0, 1, 0, 1, 0, 1]
+    predicted =    Bool[0, 1, 0, 1, 0, 1, 0]
+    @test false_positive_stats(ground_truth, predicted) == [-1, -1, -1]
+
+    # Test Case 8: FP with intermediate matched TP blocking a closer TP
+    ground_truth = Bool[1, 0, 1, 0, 1, 0, 1]
+    predicted =    Bool[1, 1, 0, 1, 0, 1, 0]
+    @test false_positive_stats(ground_truth, predicted) == [1, 1, 1]
+
+    # Test Case 9: FP between two TPs with one already matched
+    ground_truth = Bool[1, 0, 1, 0, 1]
+    predicted =    Bool[0, 1, 1, 0, 0]
+    @test false_positive_stats(ground_truth, predicted) == [-1]
+
+    # Test Case 10: FP to the right of all TPs
+    ground_truth = Bool[1, 0, 0]
+    predicted =    Bool[0, 0, 1]
+    @test false_positive_stats(ground_truth, predicted) == [-2]
+
+    # Test Case 11: FP to the left of all TPs
+    ground_truth = Bool[0, 0, 1]
+    predicted =    Bool[1, 0, 0]
+    @test false_positive_stats(ground_truth, predicted) == [2]
+
+    # Test Case 12: FP with multiple TPs but some blocked by matched TPs
+    ground_truth = Bool[1, 0, 1, 0, 1, 0, 1]
+    predicted =    Bool[0, 1, 1, 0, 0, 1, 0]
+    @test false_positive_stats(ground_truth, predicted) == [-1, -1]
+
+    # Test Case 13: FP with TP on both sides but one blocked
+    ground_truth = Bool[1, 0, 1, 0, 1, 0, 1]
+    predicted =    Bool[0, 1, 0, 1, 0, 1, 0]
+    @test false_positive_stats(ground_truth, predicted) == [-1, -1, -1]
+
+    # Test Case 14: single match, blocked
+    ground_truth = Bool[0, 0, 0, 1, 0, 1, 0]
+    predicted =    Bool[0, 1, 0, 1, 0, 0, 0]
+    @test false_positive_stats(ground_truth, predicted) == Int[]
+
+    # Test Case 15: 2x matches, one is blocked
+    ground_truth = Bool[0, 0, 0, 1, 0, 1, 1]
+    predicted =    Bool[0, 1, 0, 1, 1, 0, 0]
+    @test false_positive_stats(ground_truth, predicted) == [1]
 end

@@ -402,12 +402,23 @@ function false_positive_stats(ground_truth, predicted)
     for candidate in sorted_candidates
         _, fp, gt, signed_dist = candidate
         if (fp ∉ matched_fp) && (gt ∈ unmatched_set)
-            push!(matched_distances, signed_dist)
-            push!(matched_fp, fp)
-            delete!(unmatched_set, gt)
+            # Check if there's any matched TP (from matched_ground_truth) between fp and gt
+            has_intermediate = false
+            min_pos = min(fp, gt)
+            max_pos = max(fp, gt)
+            for m_gt in matched_ground_truth
+                if m_gt > min_pos && m_gt < max_pos
+                    has_intermediate = true
+                    break
+                end
+            end
+            if !has_intermediate
+                push!(matched_distances, signed_dist)
+                push!(matched_fp, fp)
+                delete!(unmatched_set, gt)
+            end
         end
     end
-
     return matched_distances
 end
 
