@@ -306,11 +306,11 @@ function plot_model_metrics(models::Vector)
     return plt
 end
 
-_nbins_Rice(n) = ceil(Int, 2cbrt(n))
+_nbins_sqrt(n) = ceil(Int, 2sqrt(n))
 
 function simple_hist(v::Vector)
     L = length(v)
-    nbins_Rice = _nbins_Rice(L)
+    nbins_Rice = _nbins_sqrt(L)
     trace = histogram(x=v, nbinsx=nbins_Rice)
 
     layout = Layout(
@@ -323,90 +323,137 @@ function simple_hist(v::Vector)
     return Plot(trace, layout)
 end
 
-function plot_mismatch_histograms(gt_s2s_ranges::Dict{Int, Int}, pred_s2s_ranges::Dict{Int, Int}, fp_shifts::Dict{Int, Int})
-    gt_values = Iterators.flatten(Iterators.cycle(k, v) for (k,v) in gt_s2s_ranges) |> collect
-    pred_values = Iterators.flatten(Iterators.cycle(k, v) for (k,v) in pred_s2s_ranges) |> collect
-    fp_values = Iterators.flatten(Iterators.cycle(k, v) for (k,v) in fp_shifts) |> collect
-
-    gt_nbins = _nbins_Rice(length(gt_values))
-    pred_nbins = _nbins_Rice(length(pred_values))
-    fp_nbins = _nbins_Rice(length(fp_values))
-
-    gt_trace = histogram(
-        x=gt_values,
-        name="Ground Truth",
-        marker_color="#636EFA",
-        opacity=0.6,
-        nbinsx=gt_nbins
-    )
-
-    pred_trace = histogram(
-        x=pred_values,
-        name="Predicted",
-        marker_color="#EF553B",
-        opacity=0.6,
-        nbinsx=pred_nbins
-    )
-
-    fp_trace = histogram(
-        x=fp_values,
-        name="False Positive Shifts",
-        marker_color="#00CC96",
-        nbinsx=fp_nbins
-    )
-
-    min_val = 0
-    max_val = 1000
-
-    filtered_gt = filter(x -> min_val <= x <= max_val, gt_values)
-    filtered_pred = filter(x -> min_val <= x <= max_val, pred_values)
+function create_main_histograms(gt_values, pred_values, fp_values)
+    A_bins = _nbins_sqrt(length(gt_values))
+    C_bins = _nbins_sqrt(length(fp_values))
     
-    gt_nbins_zoom = calculate_nbins(filtered_gt)
-    pred_nbins_zoom = calculate_nbins(filtered_pred)
-    common_nbins = max(gt_nbins_zoom, pred_nbins_zoom)
-    edges = range(min_val, max_val, length=common_nbins+1)
-    bin_width = edges[2] - edges[1]
-    
-    gt_counts = fit(Histogram, filtered_gt, edges).weights
-    pred_counts = fit(Histogram, filtered_pred, edges).weights
-    
-    offset = bin_width * 0.2
-    gt_x = edges[1:end-1] .+ bin_width/2 .- offset/2
-    pred_x = edges[1:end-1] .+ bin_width/2 .+ offset/2
-
-    gt_trace_zoom = bar(
-        x=gt_x,
-        y=gt_counts,
-        name="Ground Truth $min_val..$max_val",
-        width=bin_width*0.6,
-        marker_color="#636EFA",
-        offsetgroup="group1",
-        showlegend=false
+    return (
+        gt_trace = histogram(
+            x=gt_values,
+            name="Ground Truth",
+            marker_color="#636EFA",
+            opacity=0.5,
+            nbinsx=A_bins,
+            legendgroup="s2s_gt_group"
+        ),
+        pred_trace = histogram(
+            x=pred_values,
+            name="Predicted",
+            marker_color="#EF553B",
+            opacity=0.5,
+            nbinsx=A_bins,
+            legendgroup="s2s_pred_group"
+        ),
+        fp_trace = histogram(
+            x=fp_values,
+            name="FP Shifts",
+            marker_color="#00CC96",
+            nbinsx=C_bins,
+            legendgroup="fp_group"
+        )
     )
+end
 
-    pred_trace_zoom = bar(
-        x=pred_x,
-        y=pred_counts,
-        name="Predicted $min_val..$max_val",
-        width=bin_width*0.6,
-        marker_color="#EF553B",
-        offsetgroup="group1",
-        showlegend=false
+function create_zoomed_histograms(filtered_gt, filtered_pred)
+    B_bins = _nbins_sqrt(length(filtered_gt))
+    return (
+        gt_trace_zoom = histogram(
+            x=filtered_gt,
+            name="Ground Truth",
+            marker_color="#636EFA",
+            opacity=0.5,
+            showlegend=false,
+            nbinsx=B_bins,
+            legendgroup="s2s_gt_group"
+        ),
+        pred_trace_zoom = histogram(
+            x=filtered_pred,
+            name="Predicted",
+            marker_color="#EF553B",
+            opacity=0.5,
+            showlegend=false,
+            nbinsx=B_bins,
+            legendgroup="s2s_pred_group"
+        )
     )
+end
 
+function create_fp_shift_bar(fp_shifts, D_range)
     total_fp = sum(values(fp_shifts))
-    shift_range = -30:30
-    percentages = [get(fp_shifts, s, 0)/total_fp * 100 for s in shift_range]
+    percentages = [get(fp_shifts, s, 0)/total_fp * 100 for s in D_range]
     
-    tickvals = collect(-30:3:30)
+    return bar(
+        x=collect(D_range),
+        y=percentages,
+        name="FP Shifts",
+        marker_color="#00CC96",
+        legendgroup="fp_group",
+        showlegend=false
+    )
+end
+
+function configure_layout!(fig, B_range, D_range)
+    left_boundry = D_range.start - D_range.start % 3
+    right_boundry = D_range.stop - D_range.stop % 3
+    tickvals = collect(left_boundry:3:right_boundry)
     ticktext = string.(tickvals)
     
-    fp_bar_trace = bar(
-        x=collect(shift_range),
-        y=percentages,
-        name="FP Shift Distribution",
-        marker_color="#00CC96"
+    relayout!(
+        fig,
+        barmode="overlay",
+        title_text="Model performance profiles",
+
+        xaxis=attr(title="Length", showgrid=false),
+        yaxis=attr(type="log", title="Count, log", showgrid=true),
+        xaxis3=attr(title="Shift Value", showgrid=false),
+        yaxis3=attr(type="log", title="Count, log", showgrid=true),
+
+        xaxis2=attr(
+            title="Length $B_range",
+            showgrid=false,
+            range=[B_range.start, B_range.stop]
+        ),
+        yaxis2=attr(
+            type="log",
+            title="Count, log",
+            showgrid=true
+        ),
+        xaxis4=attr(
+            title="Shift Value $D_range",
+            showgrid=false,
+            tickmode="array",
+            tickvals=tickvals,
+            ticktext=ticktext,
+            tickfont=attr(size=8),
+            range=[D_range.start-0.5, D_range.stop+0.5]
+        ),
+        yaxis4=attr(
+            type="linear",
+            title="% of total",
+            showgrid=true
+        ),
+
+        legend=attr(x=1, y=0.5, orientation="v"),
     )
+end
+
+function plot_mismatch_histograms(gt_s2s_ranges::Dict{Int, Int}, 
+    pred_s2s_ranges::Dict{Int, Int}, 
+    fp_shifts::Dict{Int, Int})
+    expand(ranges::Dict{Int, Int}) = Iterators.flatten(Iterators.cycle(k, v) for (k,v) in ranges) |> collect
+
+    gt_values = expand(gt_s2s_ranges)
+    pred_values = expand(pred_s2s_ranges)
+    fp_values = expand(fp_shifts)
+
+    B_range = 0:2000
+    D_range = -36:36
+    filtered_gt = filter(in(B_range), gt_values)
+    filtered_pred = filter(in(B_range), pred_values)
+
+    main_histograms = create_main_histograms(gt_values, pred_values, fp_values)
+    zoomed_histograms = create_zoomed_histograms(filtered_gt, filtered_pred)
+    fp_bar_trace = create_fp_shift_bar(fp_shifts, D_range)
 
     fig = make_subplots(
         rows=2,
@@ -415,56 +462,21 @@ function plot_mismatch_histograms(gt_s2s_ranges::Dict{Int, Int}, pred_s2s_ranges
         vertical_spacing=0.1,
         horizontal_spacing=0.1,
         subplot_titles=[
-        "Start-to-Start Length Distribution" "Start-to-Start $min_val..$max_val";
-        "False Positive Shifts"              "Shift Distribution $shift_range"
+            "<b style='font-size:18px'>A</b>: Start-to-Start lengths";
+            "<b style='font-size:18px'>B</b>: Start-to-Start lengths (zoom in)";;
+            "<b style='font-size:18px'>C</b>: Nearest TP to recognized FP";
+            "<b style='font-size:18px'>D</b>: Nearest TP to recognized FP (zoom in)"
         ]
     )
 
-    add_trace!(fig, gt_trace, row=1, col=1)
-    add_trace!(fig, pred_trace, row=1, col=1)
-    add_trace!(fig, fp_trace, row=2, col=1)
-    add_trace!(fig, gt_trace_zoom, row=1, col=2)
-    add_trace!(fig, pred_trace_zoom, row=1, col=2)
+    add_trace!(fig, main_histograms.gt_trace, row=1, col=1)
+    add_trace!(fig, main_histograms.pred_trace, row=1, col=1)
+    add_trace!(fig, main_histograms.fp_trace, row=2, col=1)
+    add_trace!(fig, zoomed_histograms.gt_trace_zoom, row=1, col=2)
+    add_trace!(fig, zoomed_histograms.pred_trace_zoom, row=1, col=2)    
     add_trace!(fig, fp_bar_trace, row=2, col=2)
 
-    relayout!(
-        fig,
-        barmode="overlay",
-        title_text="Sequence Analysis Histograms",
-
-        xaxis=attr(title="Length", showgrid=false),
-        yaxis=attr(type="log", title="Count (log scale)", showgrid=true),
-        xaxis3=attr(title="Shift Value", showgrid=false),
-        yaxis3=attr(type="log", title="Count (log scale)", showgrid=true),
-
-        xaxis2=attr(
-            title="Length $min_val..$max_val",
-            showgrid=false,
-            range=[-bin_width, max_val+bin_width]
-        ),
-        yaxis2=attr(
-            type="log",
-            title="Count (log scale)",
-            showgrid=true
-        ),
-        xaxis4=attr(
-            title="Shift Value $shift_range",
-            showgrid=false,
-            tickmode="array",
-            tickvals=tickvals,
-            ticktext=ticktext,
-            tickfont=attr(size=8),
-            range=[shift_range.start-0.5, shift_range.stop+0.5]
-        ),
-        yaxis4=attr(
-            type="linear",
-            title="Percentage of Total (%)",
-            showgrid=true
-        ),
-
-        legend=attr(x=1.05, y=1, orientation="v"),
-        margin=attr(l=50, r=50, t=80, b=50)
-    )
+    configure_layout!(fig, B_range, D_range)
 
     return fig
 end
