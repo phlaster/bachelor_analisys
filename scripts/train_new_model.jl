@@ -28,7 +28,7 @@ function parse_commandline()
             help = ""
         "--pad", "-p"
             help = ""
-            default = 30
+            default = 125
             arg_type = Int64
             range_tester = x->x≥0
         "--train", "-T"
@@ -56,7 +56,7 @@ function parse_commandline()
             arg_type = Float64
             range_tester = x->0≤x
         "--skip_chunks", "-x"
-            default = Inf
+            default = 0.98
             arg_type = Float64
             range_tester = x->x>0
         "--device", "-D"
