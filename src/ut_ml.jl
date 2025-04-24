@@ -154,9 +154,8 @@ function _train_epoch!(model, dataset, opt, loss_function, max_chunk_size, dev, 
             n_labels += n_labels_chunk
             n_positive += n_chunk_positive
             if n_chunk_positive/n_labels_chunk < n_positive/n_labels * chunk_skip_coeff
-                # skipping chunks with low positive class representation
-                # comparing chunk positive class frequency (pcf) with overall pcf
-                # logs are used to avoid integer overflow
+                # comparing per-chunk positive class frequency (PCF) with overall PCF
+                # skipping chunks with low PCF
                 skipped_chunks += 1
                 continue
             end
@@ -188,7 +187,8 @@ function train_model(model, ds_train::GenomeDataset, ds_test::GenomeDataset;
     epochs::Int=1,
     lr::Float64=0.005,
     dev=gpu,
-    floss_gamma::Float64=3.0,
+    floss_gamma::Float64=3.5,
+    loss_lambda::Float64=0.1,
     decay_factor::Float64=0.6,
     max_chunk_size::Int=2*10^5,
     chunk_skip_coeff::Float64=0.0,
@@ -198,6 +198,7 @@ function train_model(model, ds_train::GenomeDataset, ds_test::GenomeDataset;
         epochs>0,
         0<lr≤1,
         0≤floss_gamma,
+        0≤loss_lambda,
         0<decay_factor≤1,
         0<max_chunk_size≤10^6,
         0≤chunk_skip_coeff
@@ -209,7 +210,16 @@ function train_model(model, ds_train::GenomeDataset, ds_test::GenomeDataset;
     dev_label = CUDA.device(first(model.layers).weight) |> string
 
     opt = Flux.setup(Adam(lr), model)
-    loss_function(ŷ, y) = Flux.Losses.binary_focal_loss(ŷ, y; gamma=floss_gamma)
+
+    function loss_function(ŷ, y; gamma=floss_gamma, min_distance=60, lambda=loss_lambda)
+        focal_loss = Flux.Losses.binary_focal_loss(ŷ, y; gamma=gamma)
+        predictions = findall(ŷ .> 0.5)
+        distances = diff(predictions)
+        spatial_penalty = sum(exp.(-distances / min_distance))
+    
+        total_loss = focal_loss + lambda * spatial_penalty
+        return total_loss
+    end
 
     losses = Float32[]
     lrs = Float64[]
@@ -245,6 +255,7 @@ function train_model(model, ds_train::GenomeDataset, ds_test::GenomeDataset;
             pad=ds_train.pad,
             device=dev_label,
             gamma=floss_gamma,
+            lambda=loss_lambda,
             decay=decay_factor,
             chunk=max_chunk_size,
             chunk_skip=chunk_skip_coeff,
@@ -281,6 +292,7 @@ function dotrain_model(model, ds_train::GenomeDataset, ds_test::GenomeDataset;
     opt,
     elapsed_epochs::Int,
     floss_gamma::Float64,
+    loss_lambda::Float64,
     decay_factor::Float64,
     max_chunk_size::Int,
     chunk_skip_coeff::Float64,
@@ -293,10 +305,11 @@ function dotrain_model(model, ds_train::GenomeDataset, ds_test::GenomeDataset;
     @assert all([
         epochs>0,
         length(losses)==length(lrs)==length(metrics)==length(cms)==elapsed_epochs,
-        0≤ floss_gamma,
-        0< decay_factor ≤1,
-        0< max_chunk_size ≤10^6,
-        0≤ chunk_skip_coeff
+        0 ≤ floss_gamma,
+        0 ≤ loss_lambda,
+        0 < decay_factor ≤1,
+        0 < max_chunk_size ≤10^6,
+        0 ≤ chunk_skip_coeff
     ]) "Wrong parameter value"
     @assert isdir(savedir) "Wrong directory name for model saving"
 
@@ -304,7 +317,15 @@ function dotrain_model(model, ds_train::GenomeDataset, ds_test::GenomeDataset;
     opt = opt |> dev
 
     dev_label = CUDA.device(first(model.layers).weight) |> string
-    loss_function(ŷ, y) = Flux.Losses.binary_focal_loss(ŷ, y; gamma=floss_gamma)
+    function loss_function(ŷ, y; gamma=floss_gamma, min_distance=60, lambda=loss_lambda)
+        focal_loss = Flux.Losses.binary_focal_loss(ŷ, y; gamma=gamma)
+        predictions = findall(ŷ .> 0.5)
+        distances = diff(predictions)
+        spatial_penalty = sum(exp.(-distances / min_distance))
+    
+        total_loss = focal_loss + lambda * spatial_penalty
+        return total_loss
+    end
     current_lr = last(lrs) * decay_factor
 
     start_epoch = elapsed_epochs+1
@@ -336,6 +357,7 @@ function dotrain_model(model, ds_train::GenomeDataset, ds_test::GenomeDataset;
             pad=ds_train.pad,
             device=dev_label,
             gamma=floss_gamma,
+            lambda=loss_lambda,
             decay=decay_factor,
             chunk=max_chunk_size,
             chunk_skip=chunk_skip_coeff,

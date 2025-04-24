@@ -55,6 +55,10 @@ function parse_commandline()
             default = 3.5
             arg_type = Float64
             range_tester = x->0≤x
+        "--lambda", "-b"
+            default = 0.1
+            arg_type = Float64
+            range_tester = x->0≤x
         "--skip_chunks", "-x"
             default = 0.98
             arg_type = Float64
@@ -79,6 +83,7 @@ function main()
     lr = args["lr"]
     decay_factor = args["decay"]
     floss_gamma = args["gamma"]
+    loss_lambda = args["lambda"]
     chunk_skip_coeff = args["skip_chunks"]
     
     DIR = args["output_dir"]
@@ -112,6 +117,7 @@ function main()
         lr=lr,
         dev=dev,
         floss_gamma=floss_gamma,
+        loss_lambda=loss_lambda,
         decay_factor=decay_factor,
         chunk_skip_coeff=chunk_skip_coeff,
         savedir=location

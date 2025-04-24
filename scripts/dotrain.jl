@@ -67,6 +67,7 @@ function main()
     @show DECAY = dump_data.decay
     @show GAMMA = dump_data.gamma
     @show CHUNK_SKIP = hasfield(typeof(dump_data), :chunk_skip) ? dump_data.chunk_skip : 0.0
+    @show LAMBDA = hasfield(typeof(dump_data), :lambda) ? dump_data.lambda : 0.0
     @show ELAPSED_EPOCHS = dump_data.epoch
     
     pseudomonadota_accs = readdlm("DATA/subsets/pseudomonadota.tsv", '\t')[:, 1] .|> string
@@ -98,6 +99,7 @@ function main()
         opt=opt,
         elapsed_epochs=ELAPSED_EPOCHS,
         floss_gamma=GAMMA,
+        loss_lambda=LAMBDA,
         decay_factor=DECAY,
         max_chunk_size=CHUNK_SIZE,
         chunk_skip_coeff=CHUNK_SKIP,
