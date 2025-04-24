@@ -145,7 +145,8 @@ function main()
         train_df
     end
     plotfile = isnothing(out_dir) ? nothing : joinpath(out_dir, "stats.html")
-    summaryplots(main_df; train_df=train_df, savename=plotfile)
+    plt = summaryplots(main_df; train_df=train_df)
+    !isnothing(plotfile) && save_plotly(plotfile, plt)
 end
 
 if abspath(PROGRAM_FILE) == @__FILE__

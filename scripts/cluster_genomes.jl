@@ -247,7 +247,8 @@ function main()
         filter(r -> r.n50_contigs ≥ n50_min, _)
         @aside push!(filter_steps, nrow(_) => "n50≥$n50_min")
     end
-    create_sankey(filter_steps; savefile=output_sankey_filter)
+    sankey_plot = create_sankey(filter_steps)
+    save_plotly(output_sankey_filter, sankey_plot)
     
     hq_count = nrow(joined_df)
     @info "Genome count after all filters: $hq_count"

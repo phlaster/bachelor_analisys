@@ -1,8 +1,16 @@
 using PlotlyJS
 using ColorSchemes
 using DataFrames
+using Statistics
+using StatsBase
 
-function create_sankey(steps::Vector{Pair{Int64, String}}; savefile=nothong)
+function save_plotly(savename, plt)
+    mkpath(dirname(savename))
+    PlotlyJS.savefig(plt, savename)
+    @info "Sankey diagram saved to $savename"
+end
+
+function create_sankey(steps::Vector{Pair{Int64, String}})
     n = length(steps)
     n_keep = n + 1
 
@@ -84,17 +92,12 @@ function create_sankey(steps::Vector{Pair{Int64, String}}; savefile=nothong)
         )
     )
 	
-    plt = plot(trace,
+    plot(trace,
 		Layout(title_text = "Applied filters", font_size = 15, margin = attr(b = 100, r=100, l=100, t=100))
 	)
-    if !isnothing(savefile)
-        PlotlyJS.savefig(plt, savefile)
-        @info "Sankey diagram saved to $savefile"
-    end
-    return plt
 end
 
-function summaryplots(main_df; train_df=nothing, savename=nothing)
+function summaryplots(main_df; train_df=nothing)
     genome_min, genome_max = extrema(main_df.genome_size)
     gene_min, gene_max = extrema(main_df.gene_count)
     genome_padding = 0.1 * (genome_max - genome_min)
@@ -229,10 +232,5 @@ function summaryplots(main_df; train_df=nothing, savename=nothing)
         yaxis4_range=ylims,
         barmode="stack"
     )
-
-    if !isnothing(savename)
-        PlotlyJS.savefig(fig, savename)
-        @info "Plots saved to $savename"
-    end
     return fig
 end
