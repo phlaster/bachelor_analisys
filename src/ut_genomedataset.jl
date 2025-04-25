@@ -62,29 +62,6 @@ function Base.show(io::IO, ds::GenomeDataset)
     println(io, "  Cached            : ", round(Int, 100*last_cached/length(ds._cache)), "%")
 end
 
-# function _find_in_cache(cache::Vector{IndexedGenome}, idx::Int)
-#     for (genome_idx, genome) in cache
-#         if genome_idx == idx
-#             return genome
-#         end
-#     end
-#     return nothing
-# end
-
-# function _insert_cache!(ds::GenomeDataset, genome_index::Int, genome::GenomeSampleTuple)
-#     length(ds._cache) >= ds.max_cache_entries && popfirst!(ds._cache)
-#     push!(ds._cache, (genome_index, genome))
-# end
-
-# function _get_or_load_cache(ds::GenomeDataset, idx::Int)
-#     cached = _find_in_cache(ds._cache, idx)
-#     !isnothing(cached) && return cached
-
-#     genome = process_genome_one_side(ds.genome_dirs[idx]; side=ds.cds_side, pad=ds.pad)
-#     _insert_cache!(ds, idx, genome)
-#     return genome
-# end
-
 function Base.length(ds::GenomeDataset)
     return last(ds._cum_counts)
 end

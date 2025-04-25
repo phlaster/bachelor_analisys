@@ -60,26 +60,6 @@ function ranges_from_GFF_records(list::Vector{GFF3.Record}, side::Symbol)
     end
 end
 
-function ranges_from_GFF_records!(chromosome::Vector{T}, list::Vector{GFF3.Record}, side::Symbol; k::T=one(T)) where T
-    isempty(list) || isempty(chromosome) && return
-    L = length(chromosome)
-    if side == :left
-        for x in list
-            position = mod1(GFF3.seqstart(x), L)
-            current = chromosome[position]
-            current == T(3) && continue
-            chromosome[position] += ifelse(current == k, zero(T), k)
-        end
-    elseif side == :right
-        for x in list
-            position = mod1(GFF3.seqend(x), L)
-            current = chromosome[position]
-            current == T(3) && continue
-            chromosome[position] += ifelse(current == k, zero(T), k)
-        end
-    end
-end
-
 function ranges_from_GFF_records!(chromosome::Vector{Bool}, list::Vector{GFF3.Record}, side::Symbol)
     isempty(list) || isempty(chromosome) && return
     L = length(chromosome)
