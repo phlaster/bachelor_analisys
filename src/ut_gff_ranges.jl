@@ -109,7 +109,7 @@ Generate a summary table showing strand distribution of genomic features. Return
 with columns: Feature type, Positive Strand count, and Negative Strand count for features 
 on the specified chromosome.
 """
-function feature_strand_table(gff_entries::Vector{GFF3.Record}, chrom::T) where T <: AbstractString
+function feature_strand_table(gff_entries::Vector{GFF3.Record}, chrom="")
     features = gff_entries .|> GFF3.featuretype |> Set
 
     df = DataFrame(
