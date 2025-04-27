@@ -150,8 +150,8 @@ function _train_epoch!(model, dataset, opt, loss_function, max_chunk_size, dev, 
 
         for (chunk_X, chunk_y) in split_into_chunks(seq, labels, max_chunk_size)
             n_chunks += 1
-            n_labels_chunk = length(labels)
-            n_chunk_positive = sum(labels)
+            n_labels_chunk = length(chunk_y)
+            n_chunk_positive = sum(chunk_y)
             n_labels += n_labels_chunk
             n_positive += n_chunk_positive
             if n_chunk_positive/n_labels_chunk < n_positive/n_labels * chunk_skip_coeff
