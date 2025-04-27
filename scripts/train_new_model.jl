@@ -88,7 +88,7 @@ function main()
     
     DIR = args["output_dir"]
     DIR_SUFFIX = args["suffix"]
-    location = mkpath(joinpath(DIR, string(now())*DIR_SUFFIX ))
+    location = joinpath(DIR, string(now())*DIR_SUFFIX)
     N_GPU = args["device"]
     
     device!(N_GPU)

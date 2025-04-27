@@ -192,8 +192,8 @@ function train_model(model, ds_train::GenomeDataset, ds_test::GenomeDataset;
     decay_factor::Float64=0.6,
     max_chunk_size::Int=2*10^5,
     chunk_skip_coeff::Float64=0.0,
-    savedir=".",
-)   
+    savedir=".")
+    
     @assert all([
         epochs>0,
         0<lr≤1,
@@ -277,7 +277,7 @@ function train_model(model, ds_train::GenomeDataset, ds_test::GenomeDataset;
         @info "Prec  : $(round(class_metrics[1].prec, digits=4))"
         @info "Recall: $(round(class_metrics[1].rec, digits=4))"
         @info "F1    : $(round(class_metrics[1].f1, digits=4))"
-        
+        mkpath(dirname(dumpname))
         serialize(dumpname, dump_data)
         @info "Saved training dump: $dumpname"
 
@@ -300,8 +300,7 @@ function dotrain_model(model, ds_train::GenomeDataset, ds_test::GenomeDataset;
     lrs::Vector{Float64},
     metrics::Vector{Dict{Int64, NamedTuple}},
     cms::Vector{Matrix{Int}},
-    savedir,
-)   
+    savedir)   
     @assert all([
         epochs>0,
         length(losses)==length(lrs)==length(metrics)==length(cms)==elapsed_epochs,
@@ -311,7 +310,6 @@ function dotrain_model(model, ds_train::GenomeDataset, ds_test::GenomeDataset;
         0 < max_chunk_size ≤10^6,
         0 ≤ chunk_skip_coeff
     ]) "Wrong parameter value"
-    @assert isdir(savedir) "Wrong directory name for model saving"
 
     model = model |> dev
     opt = opt |> dev
@@ -379,7 +377,7 @@ function dotrain_model(model, ds_train::GenomeDataset, ds_test::GenomeDataset;
         @info "Prec  : $(round(class_metrics[1].prec, digits=4))"
         @info "Recall: $(round(class_metrics[1].rec, digits=4))"
         @info "F1    : $(round(class_metrics[1].f1, digits=4))"
-        
+        mkpath(dirname(dumpname))
         serialize(dumpname, dump_data)
         @info "Saved training dump: $dumpname"
 
