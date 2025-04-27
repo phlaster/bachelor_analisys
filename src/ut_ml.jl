@@ -168,6 +168,11 @@ function _train_epoch!(model, dataset, opt, loss_function, max_chunk_size, dev, 
                 ŷ = m(X)
                 loss_function(ŷ, y)
             end
+
+            if isnan(loss)
+                @warn "NaN loss on chunk, skipping"
+                continue
+            end
             accumulated_grads = Functors.fmap(_add_grads, accumulated_grads, grads[1])
             accum_counter += 1
             push!(batch_losses, loss)
@@ -210,7 +215,10 @@ function train_model(model, ds_train::GenomeDataset, ds_test::GenomeDataset;
 
     dev_label = CUDA.device(first(model.layers).weight) |> string
 
-    opt = Flux.setup(Adam(lr), model)
+    opt = Flux.setup(
+        OptimiserChain(ClipGrad(1.0), Adam(lr)),
+        model
+    )
 
     function spatial_penalty(ŷ, min_distance::Int; dev)
         N = length(ŷ)
