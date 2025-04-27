@@ -7,6 +7,7 @@ using ProgressMeter
 using Functors
 using Serialization
 using StatsBase
+using NNlib
 
 
 function CDS_borders_both_strands(gff_data, chrom_names, chrom_lengths, side::Symbol)
@@ -211,16 +212,26 @@ function train_model(model, ds_train::GenomeDataset, ds_test::GenomeDataset;
 
     opt = Flux.setup(Adam(lr), model)
 
-    function loss_function(ŷ, y; gamma=floss_gamma, min_distance=60, lambda=loss_lambda)
-        focal_loss = Flux.Losses.binary_focal_loss(ŷ, y; gamma=gamma)
-        predictions = findall(ŷ .> 0.5)
-        distances = diff(predictions)
-        spatial_penalty = sum(exp.(-distances / min_distance))
+    function spatial_penalty(ŷ, min_distance::Int; dev)
+        N = length(ŷ)
+        d      = Float32.(1:min_distance) ./ Float32(min_distance)
+        kernel = exp.(-d)
+        x3       = reshape(ŷ,       (N, 1, 1))
+        kernel3  = reshape(kernel,  (min_distance, 1, 1)) |> dev
+        pad      = (min_distance-1, 0)
+        conv_out = NNlib.conv(x3, kernel3; pad=pad)
+        conv_vec = dropdims(conv_out, dims=(2,3))
+        penalty = mean(ŷ .* conv_vec)
+        return penalty
+    end
     
-        total_loss = focal_loss + lambda * spatial_penalty
-        return total_loss
+    function loss_with_spatial(ŷ, y; gamma::Float64=3.5, min_d::Int=60, λ::Float64=0.1, dev)
+        ℓ_focal   = Flux.Losses.binary_focal_loss(ŷ, y; gamma=gamma)
+        ℓ_spatial = spatial_penalty(ŷ, min_d; dev=dev)
+        return ℓ_focal + λ * ℓ_spatial
     end
 
+    loss_function = (ŷ, y) -> loss_with_spatial(ŷ, y; gamma=floss_gamma, min_d=60, λ=loss_lambda, dev=dev)
     losses = Float32[]
     lrs = Float64[]
     metrics = Dict{Int64, NamedTuple}[]
