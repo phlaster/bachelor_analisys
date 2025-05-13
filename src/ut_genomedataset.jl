@@ -100,3 +100,94 @@ end
 function Base.iterate(ds::GenomeDataset)
     return iterate(ds, 1)
 end
+
+function CDS_borders_both_strands(gff_data, chrom_names, chrom_lengths, side::Symbol)
+    @assert !isempty(gff_data) "Empty gff data"
+    @assert !isempty(chrom_names) "Empty chromosomes list"
+    
+    preallocated_pos = [
+        zeros(Bool, chrom_length)
+        for chrom_length in chrom_lengths
+    ]
+    preallocated_neg = [
+        zeros(Bool, chrom_length)
+        for chrom_length in chrom_lengths
+    ]
+    for (chrom_name, labels_pos, labels_neg) in zip(chrom_names, preallocated_pos, preallocated_neg)
+        cds_filter_pos = filter_gff_region(;
+            sequence_header=chrom_name,
+            regiontype="CDS",
+            strand="+"
+        )
+        cds_filter_neg = filter_gff_region(;
+            sequence_header=chrom_name,
+            regiontype="CDS",
+            strand="-"
+        )
+
+        CDS_regions_pos = cds_filter_pos(gff_data)
+        CDS_regions_neg = cds_filter_neg(gff_data)
+
+        if side == :starts
+            ranges_from_GFF_records!(labels_pos, CDS_regions_pos, :left)
+            ranges_from_GFF_records!(labels_neg, CDS_regions_neg, :right)
+        elseif side == :stops
+            ranges_from_GFF_records!(labels_pos, CDS_regions_pos, :right)
+            ranges_from_GFF_records!(labels_neg, CDS_regions_neg, :left)
+        elseif side == :inner
+            ranges_from_GFF_records!(labels_pos, CDS_regions_pos, :inner)
+            ranges_from_GFF_records!(labels_neg, CDS_regions_neg, :inner)
+        else
+            throw(ArgumentError)
+        end
+    end
+    return preallocated_pos, preallocated_neg
+end
+
+function process_genome_one_side(genome_dir::T; side::Symbol=:starts, pad::Int=0) where T <: AbstractString
+    @assert side in [:starts, :stops, :inner] "wrong side symbol: $side, must be either :starts or :stops or :inner"
+    @assert isdir(genome_dir) "No such genomic directory"
+    file_prefix = last(splitpath(genome_dir))
+    fastaname = joinpath(genome_dir, "$file_prefix.fna")
+    gffname = joinpath(genome_dir, "$file_prefix.gff")
+    @assert all(isfile.([fastaname, gffname])) "Genomic files not found"
+
+    
+    fasta_data = readfasta(fastaname)
+    fasta_sequences = getindex.(fasta_data, 2)
+    dna_padded = [add_pad(uppercase.(collect(fs)), pad) for fs in fasta_sequences]
+    # dna_encoded =  Flux.onehotbatch.(dna_padded, Ref(('A', 'C', 'G', 'T')), 'C')
+
+    
+    chrom_names = getindex.(fasta_data, 1) .|> split .|> first
+    chrom_lengths = length.(fasta_sequences)
+    gff_data = open_gff(gffname)
+    
+    labels_pos, labels_neg = CDS_borders_both_strands(gff_data, chrom_names, chrom_lengths, side)
+    
+    return (dna_padded, labels_pos, labels_neg)
+end
+
+function count_chromosomes(genome_dir::T) where T <: AbstractString
+    @assert isdir(genome_dir) "No such genomic directory"
+    countfilename = only(filter(startswith("n_chroms="), readdir(genome_dir)))
+    n_chroms = parse(Int, countfilename[10:end])
+    return n_chroms
+end
+
+function count_chromosomes(genome_dirs::Vector{T}) where T <: AbstractString
+    tasks = [Threads.@spawn count_chromosomes(dir) for dir in genome_dirs]
+    results = fetch.(tasks)
+    return results
+end
+
+function add_pad(v::Vector, pad::Int)
+    pad < 1 && return v
+    L = length(v)
+    pad <= L && return vcat(v[end-pad+1:end], v, v[1:pad])
+
+    leading = [v[mod1(i, L)] for i in L-pad+1:L]
+    trailing = [v[mod1(i, L)] for i in 1:pad]
+    
+    return vcat(leading, v, trailing)
+end

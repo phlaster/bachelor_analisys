@@ -10,89 +10,6 @@ using StatsBase
 using NNlib
 
 
-function CDS_borders_both_strands(gff_data, chrom_names, chrom_lengths, side::Symbol)
-    @assert !isempty(gff_data) "Empty gff data"
-    @assert !isempty(chrom_names) "Empty chromosomes list"
-    @assert side in [:starts, :stops] "wrong side symbol: $side, must be either :starts or :stops"
-    
-    preallocated_chromosomes = [
-        zeros(Bool, chrom_length)
-        for chrom_length in chrom_lengths
-    ]
-    for (chrom_name, chromosome) in zip(chrom_names, preallocated_chromosomes)
-        cds_filter_pos = filter_gff_region(;
-            sequence_header=chrom_name,
-            regiontype="CDS",
-            strand="+"
-        )
-        # cds_filter_neg = filter_gff_region(;
-        #     sequence_header=chrom_name,
-        #     regiontype="CDS",
-        #     strand="-")
-
-        CDS_regions_pos = cds_filter_pos(gff_data)
-        # CDS_regions_neg = cds_filter_neg(gff_data)
-
-        if side == :starts
-            ranges_from_GFF_records!(chromosome, CDS_regions_pos, :left)
-            # ranges_from_GFF_records!(chromosome, CDS_regions_neg, :right; k=0x02)
-        else
-            ranges_from_GFF_records!(chromosome, CDS_regions_pos, :right)
-            # ranges_from_GFF_records!(chromosome, CDS_regions_neg, :left; k=0x02)
-        end
-    end
-    return preallocated_chromosomes
-end
-
-function process_genome_one_side(genome_dir::T; side::Symbol=:starts, pad::Int=0) where T <: AbstractString
-    @assert side in [:starts, :stops] "wrong side symbol: $side, must be either :starts or :stops"
-    @assert isdir(genome_dir) "No such genomic directory"
-    file_prefix = last(splitpath(genome_dir))
-    fastaname = joinpath(genome_dir, "$file_prefix.fna")
-    gffname = joinpath(genome_dir, "$file_prefix.gff")
-    @assert all(isfile.([fastaname, gffname])) "Genomic files not found"
-
-    
-    fasta_data = readfasta(fastaname)
-    fasta_sequences = getindex.(fasta_data, 2)
-    dna_padded = add_pad.(collect.(uppercase.(fasta_sequences)), pad)
-    dna_encoded =  Flux.onehotbatch.(dna_padded, Ref(('A', 'C', 'G', 'T', 'N')), 'N')
-
-    
-    chrom_names = getindex.(fasta_data, 1) .|> split .|> first
-    chrom_lengths = length.(fasta_sequences)
-    gff_data = open_gff(gffname)
-    
-    labels_padded = CDS_borders_both_strands(gff_data, chrom_names, chrom_lengths, side)
-    # labels_encoded = Flux.onehotbatch.(labels_padded, Ref((0,1)))
-    
-    return (dna_encoded, labels_padded)
-end
-
-function count_chromosomes(genome_dir::T) where T <: AbstractString
-    @assert isdir(genome_dir) "No such genomic directory"
-    countfilename = only(filter(startswith("n_chroms="), readdir(genome_dir)))
-    n_chroms = parse(Int, countfilename[10:end])
-    return n_chroms
-end
-
-function count_chromosomes(genome_dirs::Vector{T}) where T <: AbstractString
-    tasks = [Threads.@spawn count_chromosomes(dir) for dir in genome_dirs]
-    results = fetch.(tasks)
-    return results
-end
-
-function add_pad(v::Vector, pad::Int)
-    pad < 1 && return v
-    L = length(v)
-    pad <= L && return vcat(v[end-pad+1:end], v, v[1:pad])
-
-    leading = [v[mod1(i, L)] for i in L-pad+1:L]
-    trailing = [v[mod1(i, L)] for i in 1:pad]
-    
-    return vcat(leading, v, trailing)
-end
-
 _remove_singular_dims(x) = dropdims(x, dims=(2,3))
 function create_model(; window_size::Int, input_channels::Int=5)
     Chain(
@@ -187,6 +104,18 @@ function _train_epoch!(model, dataset, opt, loss_function, max_chunk_size, dev, 
     @info "Chunks skipped: $skipped_chunks/$n_chunks = $(round(skipped_chunks/n_chunks, digits=3))"
     @info "Mean loss     : $epoch_loss"
     return epoch_loss, skipped_chunks, n_chunks
+end
+
+function spatial_penalty(y, window)
+    N = length(y)
+    d_max = min(window, N - 1)
+    sum(@inbounds sum(@view(y[1:N-d]) .* @view(y[d+1:N])) for d in 1:d_max)
+end
+
+function loss_with_spatial(ŷ, y; gamma, min_d, λ)
+    focal = Flux.Losses.binary_focal_loss(ŷ, y; gamma=gamma)
+    spatial = spatial_penalty(ŷ, min_d)
+    return focal + λ * spatial
 end
 
 function train_model(model, ds_train::GenomeDataset, ds_test::GenomeDataset;
