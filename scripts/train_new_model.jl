@@ -56,8 +56,8 @@ function parse_commandline()
             arg_type = Float64
             range_tester = x->0≤x
         "--lambda", "-b"
-            default = 0.1
-            arg_type = Float64
+            default = 1.f-6
+            arg_type = Float32
             range_tester = x->0≤x
         "--skip_chunks", "-x"
             default = 0.98
