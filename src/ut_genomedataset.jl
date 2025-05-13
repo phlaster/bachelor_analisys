@@ -22,7 +22,7 @@ struct GenomeDataset
         cds_side::Symbol=:starts,
         pad::Int=0
     )
-    
+        @assert cds_side in [:starts, :stops, :inner] "wrong side symbol :$side, must be either :starts or :stops or :inner"
         genome_counts = length(genome_dirs)
         chromosome_counts = count_chromosomes(genome_dirs)
         cum_counts = cumsum(chromosome_counts)

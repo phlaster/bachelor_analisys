@@ -73,6 +73,17 @@ function ranges_from_GFF_records!(chromosome::Vector{Bool}, list::Vector{GFF3.Re
             position = mod1(GFF3.seqend(x), L)
             chromosome[position] |= true
         end
+    elseif side == :inner
+        @simd for record in gff_records
+            l = mod1(GFF3.seqstart(record), L)
+            r = mod1(GFF3.seqend(record), L)
+            if l<=r
+                chromosome[l:r] .|= true
+            else
+                chromosome[l:end] .|= true
+                chromosome[1:r] .|= true
+            end
+        end
     end
 end
 
