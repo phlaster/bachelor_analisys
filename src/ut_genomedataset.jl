@@ -1,11 +1,13 @@
-using Flux: OneHotArrays
+# using Flux: OneHotArrays
 
-const Chromosome_X = OneHotArrays.OneHotMatrix{UInt32, Vector{UInt32}}
-const Labels_y = Vector{Bool}
+const Chromosome_X = Vector{Char}# OneHotArrays.OneHotMatrix{UInt32, Vector{UInt32}}
+const Labels_pos = Vector{Bool}
+const Labels_neg = Vector{Bool}
 
 const GenomeSampleTuple = Tuple{
     Vector{Chromosome_X}, 
-    Vector{Labels_y},
+    Vector{Labels_pos},
+    Vector{Labels_neg}
 }
 
 struct GenomeDataset
@@ -54,7 +56,7 @@ function Base.show(io::IO, ds::GenomeDataset)
     println(io, "GenomeDataset:")
     println(io, "  Genome Directories: ", first(ds.genome_dirs), ", ...")
     println(io, "  Genome Count      : ", ds.genome_counts)
-    println(io, "  Total Chromosomes : ", length(ds))
+    println(io, "  Total Chromosomes : ", length(ds), " x 2")
     println(io, "  Padding           : ", ds.pad)
     println(io, "  CDS sides         : ", ds.cds_side)
     last_cached = findfirst(isnothing, ds._cache)
@@ -66,7 +68,7 @@ function Base.length(ds::GenomeDataset)
     return last(ds._cum_counts)
 end
 
-function Base.getindex(ds::GenomeDataset, idx::Int)::Tuple{Chromosome_X, Labels_y}
+function Base.getindex(ds::GenomeDataset, idx::Int)::Tuple{Chromosome_X, Labels_pos, Labels_neg}
     idx in 1:length(ds) || throw(BoundsError(ds, idx))
     
     genome_idx = searchsortedfirst(ds._cum_counts, idx)
@@ -82,7 +84,7 @@ function Base.getindex(ds::GenomeDataset, idx::Int)::Tuple{Chromosome_X, Labels_
     prev_total = genome_idx == 1 ? 0 : ds._cum_counts[genome_idx - 1]
     chrom_idx = idx - prev_total
     
-    return (genome[1][chrom_idx], genome[2][chrom_idx])
+    return (genome[1][chrom_idx], genome[2][chrom_idx], genome[3][chrom_idx])
 end
 
 function Base.lastindex(ds::GenomeDataset)

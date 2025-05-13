@@ -28,6 +28,8 @@ function parse_commandline()
         "--dump_file", "-d"
             required = true
             help = ""
+        "--strand", "-s"
+            required = true
         "--device", "-D"
             default = 0
             arg_type = Int64
@@ -46,6 +48,7 @@ function main()
 
     N_TEST = args["test"]
     GPU_ID = args["device"]
+    TEST_STRAND = args["strand"] |> Symbol
     
     device!(GPU_ID)
     DEV = gpu_device()
@@ -58,10 +61,10 @@ function main()
     @show PAD = dump_data.pad
     @show WINDOW = 2PAD + 1
     
-    pseudomonadota_accs = readdlm("DATA/subsets/pseudomonadota.tsv", '\t')[:, 1] .|> string |> shuffle
-    test_accs = pseudomonadota_accs[1:N_TEST]
+    pseudomonadota_accs = readdlm("DATA/subsets/pseudomonadota.tsv", '\t')[:, 1] .|> string
+    test_accs = pseudomonadota_accs[end-N_TEST+1:end]
     dirs_test = "DATA/genomes/genomes/" .* test_accs
-    ds_test = GenomeDataset(dirs_test, cds_side=:starts, pad=PAD)
+    ds_test = GenomeDataset(dirs_test, cds_side=:stops, pad=PAD)
     
     @show ds_test
     
@@ -69,10 +72,12 @@ function main()
     model = dump_data.model |> DEV
 
     (class_metrics, conf_mtr, classes), fp_shifts, gt_s2s_ranges, pred_s2s_ranges = evaluate_bin_class_model(
-        model, ds_test; dev=DEV
+        model, ds_test; dev=DEV, strand=TEST_STRAND
     )
 
-    serialize(DUMP_FILE * ".stats", (fp_shifts=fp_shifts, gt_s2s_ranges=gt_s2s_ranges, pred_s2s_ranges=pred_s2s_ranges))
+    serialize(DUMP_FILE * "_strand=$TEST_STRAND.stats", (
+        fp_shifts=fp_shifts, gt_s2s_ranges=gt_s2s_ranges, pred_s2s_ranges=pred_s2s_ranges, strand=TEST_STRAND, metrics=class_metrics, cm=conf_mtr
+    ))
     # plot_path = DUMP_FILE * ".png"
     # plot_two_subplots(fp_shifts, gt_s2s_ranges, pred_s2s_ranges; savename=plot_path)
 end

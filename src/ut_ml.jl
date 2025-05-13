@@ -11,7 +11,7 @@ using NNlib
 
 
 _remove_singular_dims(x) = dropdims(x, dims=(2,3))
-function create_model(; window_size::Int, input_channels::Int=5)
+function create_model(; window_size::Int, input_channels::Int=4)
     Chain(
         Conv((window_size,), input_channels => 128, pad=0, bias=false),
         BatchNorm(128, relu),
@@ -31,29 +31,113 @@ function create_model(; window_size::Int, input_channels::Int=5)
 end
 
 
-function split_into_chunks(seq, labels, max_chunk_size)
-    seq_length = size(seq, 2)
-    labels_length = length(labels)
-    pad = (seq_length - labels_length) ÷ 2
-    seq_length <= max_chunk_size && return [(seq, labels)]
+# function split_into_chunks(seq, labels, max_chunk_size)
+#     seq_length = size(seq, 2)
+#     labels_length = length(labels)
+#     pad = (seq_length - labels_length) ÷ 2
+#     seq_length <= max_chunk_size && return [(seq, labels)]
 
-    nchunks = labels_length ÷ max_chunk_size + 1
+#     nchunks = labels_length ÷ max_chunk_size + 1
+#     chunk_lengths_approx = ceil(Int, labels_length/nchunks)
+#     chunk_coords = Base.Iterators.partition(1:labels_length, chunk_lengths_approx)
+
+#     res = @views (
+#         (seq[:, (coords.start):(coords.stop+2pad)], labels[coords])
+#         for coords in chunk_coords
+#     )
+#    return res 
+# end
+
+function split_chromosome(GDSentry, strand, max_chunk)
+    sequence, labels_pos, labels_neg = GDSentry
+    seq_length = length(sequence)
+    @assert length(labels_pos) == length(labels_neg) && length(labels_pos) <= seq_length
+    labels_length = length(labels_pos)
+    pad = (seq_length - labels_length) ÷ 2
+
+    if seq_length <= max_chunk
+        strand==:pos && return [(Flux.onehotbatch(sequence, ('A','C','G','T'), 'C'), labels_pos)]
+        strand==:neg && return [(Flux.onehotbatch(reverse(sequence), ('T','G','C','A'), 'C'), reverse(labels_neg))]
+        strand==:both && return [
+            (Flux.onehotbatch(sequence, ('A','C','G','T'), 'C'), labels_pos),
+            (Flux.onehotbatch(reverse(sequence), ('T','G','C','A'), 'C'), reverse(labels_neg))
+        ]
+        throw(ArgumentError)
+    end
+
+    nchunks = labels_length ÷ max_chunk + 1
     chunk_lengths_approx = ceil(Int, labels_length/nchunks)
     chunk_coords = Base.Iterators.partition(1:labels_length, chunk_lengths_approx)
 
-    res = @views (
-        (seq[:, (coords.start):(coords.stop+2pad)], labels[coords])
-        for coords in chunk_coords
+    if strand==:pos
+        return @views (
+        (Flux.onehotbatch(sequence[coords.start:coords.stop+2pad], ('A','C','G','T'), 'C'), labels_pos[coords]) for coords in chunk_coords
     )
-   return res 
+    elseif strand==:neg
+        return @views (
+        (Flux.onehotbatch(sequence[reverse(coords.start:coords.stop+2pad)], ('T','G','C','A'), 'C'), labels_pos[reverse(coords)]) for coords in chunk_coords
+    )
+    elseif strand==:both
+        return Iterators.flatten(
+            Iterators.map(coords -> (
+                @views (
+                        Flux.onehotbatch(sequence[coords.start:coords.stop+2pad],('A','C','G','T'), 'C'),
+                        labels_pos[coords]
+                ),
+                @views (
+                        Flux.onehotbatch(sequence[reverse(coords.start:coords.stop+2pad)], ('T','G','C','A'), 'C'),
+                        labels_pos[reverse(coords)]
+                )
+            ), chunk_coords)
+        )
+    end
+    throw(ArgumentError("Wrong strand symbol :$strand, options are: :pos, :neg, :both"))
 end
+
+# function split_into_chunks_neg(seq, labels, max_chunk_size)
+#     seq_length = size(seq, 2)
+#     labels_length = length(labels)
+#     pad = (seq_length - labels_length) ÷ 2
+#     seq_length <= max_chunk_size && return [(reverse(seq), labels)]
+
+#     nchunks = labels_length ÷ max_chunk_size + 1
+#     chunk_lengths_approx = ceil(Int, labels_length/nchunks)
+#     chunk_coords = Base.Iterators.partition(1:labels_length, chunk_lengths_approx)
+
+#     res = (
+#         (reverse(seq[:, (coords.start):(coords.stop+2pad)]), labels[coords])
+#         for coords in chunk_coords
+#     )
+#    return res 
+# end
+
+# function split_into_chunks_alternating(seq, labels_pos, labels_neg, max_chunk_size)
+#     seq_length = size(seq, 2)
+#     labels_length = length(labels_pos)
+#     pad = (seq_length - labels_length) ÷ 2
+#     seq_length <= max_chunk_size && return [
+#         (seq, labels_pos),
+#         (reverse(seq), labels_neg)
+#     ]
+
+#     nchunks = labels_length ÷ max_chunk_size + 1
+#     chunk_lengths_approx = ceil(Int, labels_length/nchunks)
+#     chunk_coords = Base.Iterators.partition(1:labels_length, chunk_lengths_approx)
+
+#     return Iterators.flatten(
+#         Iterators.map(coords -> (
+#             (seq[:, coords.start:(coords.stop + 2 * pad)], labels_pos[coords]),
+#             (reverse(seq[:, coords.start:(coords.stop + 2 * pad)]), labels_neg[coords])
+#         ), chunk_coords)
+#     )
+# end
 
 _transform_X(seq) = reshape(permutedims(seq, (2, 1)), size(seq, 2), size(seq, 1), 1)
 _transform_y(labels) = permutedims(labels, (2, 1))
 _add_grads(a, b) = isnothing(a) ? b : isnothing(b) ? a : a .+ b
 _scale_grads(x, factor) = isnothing(x) ? nothing : x .* factor
 
-function _train_epoch!(model, dataset, opt, loss_function, max_chunk_size, dev, chunk_skip_coeff)
+function _train_epoch!(model, dataset, opt, loss_function, max_chunk_size, dev, chunk_skip_coeff, strand)
     @info "Optim: $(opt.layers[1].weight.rule)"
     
     batch_losses = Float32[]
@@ -61,11 +145,11 @@ function _train_epoch!(model, dataset, opt, loss_function, max_chunk_size, dev, 
     n_positive = 0
     n_chunks = 0
     skipped_chunks = 0
-    @showprogress desc="Epoch progress:" barlen=50 color=:blue dt=1 showspeed=true for (seq, labels) in dataset
+    @showprogress desc="Epoch progress:" barlen=30 color=:blue dt=1 showspeed=true for dataset_entry in dataset
         accumulated_grads = nothing
         accum_counter = 0
 
-        for (chunk_X, chunk_y) in split_into_chunks(seq, labels, max_chunk_size)
+        for (chunk_X, chunk_y) in split_chromosome(dataset_entry, strand, max_chunk_size)
             n_chunks += 1
             n_labels_chunk = length(chunk_y)
             n_chunk_positive = sum(chunk_y)
@@ -123,22 +207,23 @@ function train_model(model, ds_train::GenomeDataset, ds_test::GenomeDataset;
     lr::Float64=0.005,
     dev=gpu,
     floss_gamma::Float64=3.5,
-    loss_lambda::Float64=0.1,
+    loss_lambda::Float32=0.1f0,
     decay_factor::Float64=0.6,
     max_chunk_size::Int=2*10^5,
     chunk_skip_coeff::Float64=0.0,
-    savedir=".")
+    savedir=".",
+    strand::Symbol)
     
-    @assert all([
+    all([
         epochs>0,
         0<lr≤1,
         0≤floss_gamma,
         0≤loss_lambda,
         0<decay_factor≤1,
         0<max_chunk_size≤10^6,
-        0≤chunk_skip_coeff
-    ]) "Wrong parameter value"
-    @assert isdir(savedir) "Wrong directory name for model saving"
+        0≤chunk_skip_coeff,
+        strand in [:pos, :neg, :both]
+    ]) || throw(ArgumentError)
 
     model = model |> dev
 
@@ -149,39 +234,21 @@ function train_model(model, ds_train::GenomeDataset, ds_test::GenomeDataset;
         model
     )
 
-    function spatial_penalty(ŷ, min_distance::Int; dev)
-        N = length(ŷ)
-        d      = Float32.(1:min_distance) ./ Float32(min_distance)
-        kernel = exp.(-d)
-        x3       = reshape(ŷ,       (N, 1, 1))
-        kernel3  = reshape(kernel,  (min_distance, 1, 1)) |> dev
-        pad      = (min_distance-1, 0)
-        conv_out = NNlib.conv(x3, kernel3; pad=pad)
-        conv_vec = dropdims(conv_out, dims=(2,3))
-        penalty = mean(ŷ .* conv_vec)
-        return penalty
-    end
-    
-    function loss_with_spatial(ŷ, y; gamma::Float64=3.5, min_d::Int=60, λ::Float64=0.1, dev)
-        ℓ_focal   = Flux.Losses.binary_focal_loss(ŷ, y; gamma=gamma)
-        ℓ_spatial = spatial_penalty(ŷ, min_d; dev=dev)
-        return ℓ_focal + λ * ℓ_spatial
-    end
-
-    loss_function = (ŷ, y) -> loss_with_spatial(ŷ, y; gamma=floss_gamma, min_d=60, λ=loss_lambda, dev=dev)
     losses = Float32[]
     lrs = Float64[]
     metrics = Dict{Int64, NamedTuple}[]
     cms = Matrix{Int}[]
+    lambdas = Float32[]
     
     current_lr = lr
-
+    
     for epoch in 1:epochs
         @info "Epoch $epoch/$epochs"
-        dumpname = joinpath(savedir, "$(dev_label)_epoch_$(lpad(epoch, 3, '0')).flux")
-        
+
+        current_lambda = loss_lambda * 2^(epoch-1) - loss_lambda
+        loss_function = (ŷ, y) -> loss_with_spatial(ŷ, y; gamma=floss_gamma, min_d=60, λ=current_lambda)
         epoch_loss, skipped_chunks, n_chunks = _train_epoch!(
-            model, ds_train, opt, loss_function, max_chunk_size, dev, chunk_skip_coeff
+            model, ds_train, opt, loss_function, max_chunk_size, dev, chunk_skip_coeff, strand
         )
         (class_metrics, conf_mtr, classes), fp_shifts, gt_s2s_ranges, pred_s2s_ranges = evaluate_bin_class_model(
             model, ds_test; dev=dev, max_chunk_size=max_chunk_size
@@ -191,6 +258,7 @@ function train_model(model, ds_train::GenomeDataset, ds_test::GenomeDataset;
         push!(cms, conf_mtr)
         push!(losses, epoch_loss)
         push!(lrs, current_lr)
+        push!(lambdas, current_lambda)
         
         dump_data = (
             # Frozen state
@@ -203,20 +271,21 @@ function train_model(model, ds_train::GenomeDataset, ds_test::GenomeDataset;
             pad=ds_train.pad,
             device=dev_label,
             gamma=floss_gamma,
-            lambda=loss_lambda,
             decay=decay_factor,
             chunk=max_chunk_size,
             chunk_skip=chunk_skip_coeff,
             n_chunks=n_chunks,
             skipped_chunks=skipped_chunks,
             dir=savedir,
+            strand=strand,
             
             # Train history vars
             lr=lrs,
             metrics=metrics,
             cm=cms,
             loss=losses,
-
+            lambda=lambdas,
+            
             # Aggregated countmaps
             fp_shifts=fp_shifts,
             cds_ranges_true=gt_s2s_ranges,
@@ -225,6 +294,7 @@ function train_model(model, ds_train::GenomeDataset, ds_test::GenomeDataset;
         @info "Prec  : $(round(class_metrics[1].prec, digits=4))"
         @info "Recall: $(round(class_metrics[1].rec, digits=4))"
         @info "F1    : $(round(class_metrics[1].f1, digits=4))"
+        dumpname = joinpath(savedir, "$(dev_label)_epoch_$(lpad(epoch, 3, '0')).flux")
         mkpath(dirname(dumpname))
         serialize(dumpname, dump_data)
         @info "Saved training dump: $dumpname"
@@ -397,7 +467,8 @@ function false_positive_stats(ground_truth, predicted)
     return matched_distances
 end
 
-function evaluate_bin_class_model(model, dataset; dev=gpu, max_chunk_size=2*10^5)
+function evaluate_bin_class_model(model, dataset; dev=gpu, max_chunk_size=2*10^5, strand=:pos)
+    @assert strand in [:pos, :neg, :both] "Strands can be either :pos, :neg or :both"
     function addvals!(d1::Dict{T, Int64}, d2::Dict{T, Int64}) where T
         for k2 in keys(d2)
             if haskey(d1, k2)
@@ -414,8 +485,8 @@ function evaluate_bin_class_model(model, dataset; dev=gpu, max_chunk_size=2*10^5
     pred_s2s_ranges = Dict{Int, Int}()
     
     classes = (0,1)
-    @showprogress desc="Evaluating:" barlen=50 color=:white showspeed=true for (seq, labels) in dataset
-        for (seq_chunk, labels_chunk) in split_into_chunks(seq, labels, max_chunk_size)        
+    @showprogress desc="Evaluating:" barlen=30 color=:white showspeed=true for dataset_entry in dataset
+        for (seq_chunk, labels_chunk) in split_chromosome(dataset_entry, strand, max_chunk_size)
             X = _transform_X(seq_chunk) |> dev
             y_pred = model(X) .|> >=(0.5f0) |> cpu
             cm_classes .+= multiclass_confusion(labels_chunk, y_pred; classes=classes)[1]

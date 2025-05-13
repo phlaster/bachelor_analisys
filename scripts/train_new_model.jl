@@ -67,6 +67,12 @@ function parse_commandline()
             default = 0
             arg_type = Int64
             range_tester = x->0≤x≤3
+        "--strand", "-S"
+            required = true
+            range_tester = x->x in ["pos", "neg", "both"]
+        "--cds_side", "-K"
+            required = true
+            range_tester = x->x in ["starts", "stops", "inner"]
     end
 
     return parse_args(s)
@@ -75,10 +81,12 @@ end
 
 function main()
     args = parse_commandline()
+    STRAND = args["strand"] |> Symbol
     PAD = args["pad"]
     WINDOW = 2PAD + 1
     N_TRAIN = args["train"]
     N_TEST = args["test"]
+    CDS_SIDE = args["cds_side"] |> Symbol
     n_epochs = args["epoch"]
     lr = args["lr"]
     decay_factor = args["decay"]
@@ -108,8 +116,8 @@ function main()
     dirs_train = "DATA/genomes/genomes/" .* train_accs
     dirs_test = "DATA/genomes/genomes/" .* test_accs
     
-    ds_train = GenomeDataset(dirs_train, cds_side=:starts, pad=PAD)
-    ds_test = GenomeDataset(dirs_test, cds_side=:starts, pad=PAD)
+    ds_train = GenomeDataset(dirs_train, cds_side=CDS_SIDE, pad=PAD)
+    ds_test = GenomeDataset(dirs_test, cds_side=CDS_SIDE, pad=PAD)
     
     @show ds_train
     @show ds_test
@@ -126,7 +134,8 @@ function main()
         loss_lambda=loss_lambda,
         decay_factor=decay_factor,
         chunk_skip_coeff=chunk_skip_coeff,
-        savedir=location
+        savedir=location,
+        strand=STRAND
     )
 end
 
