@@ -88,9 +88,15 @@ function main()
     
     DIR = args["output_dir"]
     DIR_SUFFIX = args["suffix"]
-    location = joinpath(DIR, string(now())*DIR_SUFFIX)
+    thistime = string(now())
+    location = joinpath(DIR, thistime*DIR_SUFFIX)
     N_GPU = args["device"]
     
+    for (k, v) in args
+        println(rpad(k, 15, " "), ": ", v)
+    end
+    println(rpad("timestamp", 15, " "), ": ", thistime)
+
     device!(N_GPU)
     
 
